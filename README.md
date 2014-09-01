@@ -1,6 +1,6 @@
 #PetBot listen
 
-An open source repository for [PetBot](http://petbot.ca) bark recognition software.
+A repository for [PetBot](http://petbot.ca) bark recognition software.
 
 Here we store code to recognize dog barks from a microphone on the raspberry pi.
 
