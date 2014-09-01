@@ -108,8 +108,9 @@ int init_gpu() {
 	//int N = 1<<log2_N; //2048;
 	int mb = mbox_open();
 
+    	//int ret = gpu_fft_prepare(mb, log2_N, GPU_FFT_REV, NUM_BUFFERS/2, &gpu_fft); // call once
+    	int ret = gpu_fft_prepare(mb, log2_N, GPU_FFT_FWD, NUM_BUFFERS/2, &gpu_fft); // call once
 
-    	int ret = gpu_fft_prepare(mb, log2_N, GPU_FFT_REV, NUM_BUFFERS/2, &gpu_fft); // call once
 
     	switch(ret) {
         	case -1: printf("Unable to enable V3D. Please check your firmware is up to date.\n"); return -1;
@@ -368,21 +369,22 @@ void * process_audio(void * n) {
 			
 		}
 
-		//unsigned t[4];
+		unsigned t[4];
 
 		//now we read in NUM_BUFFERS/2 chunks to GPU lets run this!
 	    	//fprintf(stdout,"process_audio running gpu fft\n");
-		//t[0]=Microseconds();
+		t[0]=Microseconds();
 		gpu_fft_execute(gpu_fft); 
-		//t[1]=Microseconds();
+		t[1]=Microseconds();
+		//uncomment to run CPU also
 	    	/*fprintf(stdout,"process_audio running cpu fft\n");
-		//t[2]=Microseconds();
+		t[2]=Microseconds();
 		for (i=0; i<NUM_BUFFERS/2; i++) {
 			fftw_execute_r2r(p,buffer_in[i+half*NUM_BUFFERS/2],cpu_buffer_out[i+half*NUM_BUFFERS/2]);
 		}	
-		//t[3]=Microseconds();
+		t[3]=Microseconds();
 
-		//fprintf(stdout, "GPU %u vs CPU %u\n",t[1]-t[0],t[3]-t[2]);*/
+		fprintf(stdout, "GPU %u vs CPU %u\n",t[1]-t[0],t[3]-t[2]);*/
 	
 		if (exit_now==1) {
 			sem_post(&s_done);
@@ -398,24 +400,34 @@ void * process_audio(void * n) {
 				gpu_buffer_out[i+half*NUM_BUFFERS/2][j]=gpu_base[j].re;
 			}
 			for (j=0; j<buffer_frames/2; j++) {
-				gpu_buffer_out[i+half*NUM_BUFFERS/2][j+buffer_frames/2]=gpu_base[j+buffer_frames/2].im;
+				//gpu_buffer_out[i+half*NUM_BUFFERS/2][j+buffer_frames/2]=gpu_base[j+buffer_frames/2].im;
+				gpu_buffer_out[i+half*NUM_BUFFERS/2][j+buffer_frames/2]=-gpu_base[j+buffer_frames/2].im; //i must have missed something somewhere, add -1 to fix..
 			}
 		}
+
 
 
 		for (i=0; i<NUM_BUFFERS/2; i++) {
 			double d = logit(gpu_buffer_out[i+half*NUM_BUFFERS/2]);
 			add_bark(d);
 			//fprintf(stdout,"%f\n",sum_barks());
-			if (sum_barks()<BARK_THRESHOLD) {
+			if (barks_total>NUM_BARKS && sum_barks()<BARK_THRESHOLD) {
 				time_t result = time(NULL);
 				printf("BARK detected at %s\n", ctime(&result));
 			}
 			
 		}
 
+
+		/*for (i=0; i<buffer_frames; i++) {
+			fprintf(stdout,"%0.3f%c" , cpu_buffer_out[0][i], (buffer_frames-1==i) ? '\n' : ',');
+		}
+		for (i=0; i<buffer_frames; i++) {
+			fprintf(stdout,"%0.3f%c" , gpu_buffer_out[0][i], (buffer_frames-1==i) ? '\n' : ',');
+		}
+
 		//compare GPU and CPU on values
-		/*for (i=0; i<NUM_BUFFERS/2; i++) {
+		for (i=0; i<NUM_BUFFERS/2; i++) {
 			//lets find the difference between CPU and GPU computations
 			double d =0.0;
 			int j;
@@ -455,7 +467,7 @@ int main (int argc, char *argv[]) {
 
 
   //compute the output frequencies
-  double * freq = (double*)malloc(sizeof(double)*buffer_frames);
+  /*double * freq = (double*)malloc(sizeof(double)*buffer_frames);
   if (freq==NULL) {
  	fprintf(stderr, "Failed to alloc freq array\n");
 	exit(1);
@@ -465,7 +477,7 @@ int main (int argc, char *argv[]) {
   for (i = 0; i < buffer_frames; i++) {
 	freq[i]=(((double)i)/buffer_frames)*rate;
 	fprintf(stdout, "%f%c" , freq[i], (i==buffer_frames-1) ?  '\n' : ',');
-  }
+  }*/
 
   fprintf(stdout,"starting threads\n");
 
@@ -500,6 +512,7 @@ int main (int argc, char *argv[]) {
   fftw_destroy_plan(p);
   snd_pcm_close (capture_handle);
 
+  int i;
   for (i=0; i<NUM_BUFFERS; i++) {
 	free(raw_buffer_in[i]);
 	free(buffer_in[i]);
