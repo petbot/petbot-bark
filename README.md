@@ -14,7 +14,7 @@ Included in this repository is:
 
 Run by using:
 
-``` ./listen_for_bark ```
+```sudo ./listen_for_bark ```
 
 ## License
 All content here is copyright Michael (Misko) Dzamba 2014. Unless otherwise stated in the headers. Please feel free to use any of my code or trained models for any personal projects. If you would like to package parts of this software with your product please contact me for further details.
