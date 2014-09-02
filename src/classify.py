@@ -91,8 +91,8 @@ def mask(d,n=3,ln=0):
 	d2=np.zeros((d.shape[0],l))
 	for i in xrange(len(d)):
 		d2[i]=d[i][:]
-		d2[i][:n]=0
-		d2[i][:-ln]=0
+		d2[i,:n]=0
+		d2[i,:-ln]=0
 	return d2
 
 def drop_half(d,second_half=True):
@@ -120,6 +120,14 @@ def tops(d,t=20):
 	return d2
 		
 def read_file(fn):
+	try:
+		m=np.load(fn+'.dump.npy')
+		print "Loaded pickle file... ", fn
+		return m
+	except:
+		pass
+	
+	
 	h=open(fn)
 	lines=h.readlines()
 	freq=map(lambda x : float(x) , lines[0].strip().split(','))
@@ -130,6 +138,7 @@ def read_file(fn):
 		m[i]=np.fromstring(line,sep=',')
 		i+=1
 	h.close()
+	np.save(fn+".dump",m)
 	return m
 
 def normalize(d):
@@ -154,6 +163,7 @@ def filter_uncommon(d,m=0.03):
 	d2=np.zeros((d.shape[0],len(ns)))
 	for x in xrange(len(ns)):
 		d2[:,x]=d[:,ns[x]]
+	print "Dropping %d and keeping %d" % (l-len(ns),len(ns))
 	return d2,{'selected':ns,'length':l}
 
 negatives=None
@@ -176,6 +186,7 @@ def read_and_process(fn):
 fns=sys.argv[1:]
 p = Pool()
 ds = p.map(read_and_process, fns)
+#ds=map(read_and_process,fns)
 
 for x in xrange(len(fns)):
 	fn=fns[x]
@@ -194,19 +205,19 @@ for x in xrange(len(fns)):
 
 data=np.append(negatives,positives,axis=0)
 raw_data=data.copy()
-data,filtered=filter_uncommon(data)
+data,filtered=filter_uncommon(data,m=0.01)
+#data=raw_data
+#filtered={'selected':range(512),'length':512}
 
 #print len(negatives),len(positives), len(data)
 labels=[0]*len(negatives)+[1]*len(positives)
 
 #data = preprocessing.scale(data)
 
-print len(data)	
 test_data=[]
 test_labels=[]
 train_data=[]
 train_labels=[]
-print len(data)
 for x in range(len(data)):
 	if x%2==0:
 		test_data.append(data[x])
@@ -274,9 +285,6 @@ if train==1:
 			print >> save_f, a[0][i]
 		else:
 			print >> save_f, 0
-	#print "TRAIN"
-	#for x in range(len(train_data)):
-	#	print x, clf.predict(train_data[x]), train_labels[x]
 	save_f.close()
 
 def read_model(fn):
