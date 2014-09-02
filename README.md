@@ -1,4 +1,4 @@
-#PetBot listen
+#PetBot bark
 
 A repository for [PetBot](http://petbot.ca) bark recognition software.
 
