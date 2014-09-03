@@ -130,14 +130,14 @@ void prepare_input(double ** b, int buffers, int length) {
 	//drop half, but not really just skip it
 
 	//blur
-	double * b2  = (double*)malloc(sizeof(double)*length/4);
+	/*double * b2  = (double*)malloc(sizeof(double)*length/4);
 	for (i=0; i<buffers; i++) {
 		memcpy(b2,b[i],sizeof(double)*length/4);
 		for (j=2; j<length/4-2; j++) {
 			b[i][j]=b2[j-2]*0.1+b2[j-1]*0.2+b2[j]*0.4+b2[j+1]*0.2+b2[j+2]*0.1;	
 		}
 	}
-	free(b2);
+	free(b2);*/
 	
 	//mask
 	for (i=0; i<buffers; i++) {
