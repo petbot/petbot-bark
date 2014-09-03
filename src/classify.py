@@ -79,9 +79,9 @@ def blur(d):
 	for i in xrange(len(d)):
 		for x in xrange(len(d[i])):
 			if x>1 and x<len(d[i])-2:
-				d2[i]=d[i][x-2]*0.1+d[i][x-1]*0.2+d[i][x]*0.4+d[i][x+1]*0.2+d[i][x+2]*0.1
+				d2[i,x]=d[i,x-2]*0.1+d[i,x-1]*0.2+d[i,x]*0.4+d[i,x+1]*0.2+d[i,x+2]*0.1
 			else:
-				d2[i]=d[i]
+				d2[i,x]=d[i,x]
 	return d2
 		
 def mask(d,n=3,ln=0):
@@ -166,19 +166,20 @@ def filter_uncommon(d,m=0.03):
 	print "Dropping %d and keeping %d" % (l-len(ns),len(ns))
 	return d2,{'selected':ns,'length':l}
 
-negatives=None
-positives=None
+negatives=[]
+positives=[]
 
 
 def read_and_process(fn):
 	d=normalize(read_file(fn))
 	d=np.absolute(d)
 	d=fold_back(d)
-	d=blur(d)
-	d=mask(d)
 	d=drop_half(d)
+	#d=blur(d)
+	d=mask(d)
 	d=tops(d)
-	d=blur(d)
+	#d=blur(d)
+	d=np.log(d+1)
 	#d=rand_shift(d)
 	print "Loaded %d from %s" % (len(d), fn)
 	return d
@@ -191,43 +192,15 @@ ds = p.map(read_and_process, fns)
 for x in xrange(len(fns)):
 	fn=fns[x]
 	if fn.find('dog')>=0:
-		if positives==None:
+		if positives==[]:
 			positives=ds[x]
 		else:
 			positives=np.append(positives,ds[x],axis=0)
 	else:
-		if negatives==None:
+		if negatives==[]:
 			negatives=ds[x]
 		else:
 			negatives=np.append(negatives,ds[x],axis=0)
-
-
-
-data=np.append(negatives,positives,axis=0)
-raw_data=data.copy()
-data,filtered=filter_uncommon(data,m=0.01)
-#data=raw_data
-#filtered={'selected':range(512),'length':512}
-
-#print len(negatives),len(positives), len(data)
-labels=[0]*len(negatives)+[1]*len(positives)
-
-#data = preprocessing.scale(data)
-
-test_data=[]
-test_labels=[]
-train_data=[]
-train_labels=[]
-for x in range(len(data)):
-	if x%2==0:
-		test_data.append(data[x])
-		test_labels.append(labels[x])
-	else:
-		train_data.append(data[x])
-		train_labels.append(labels[x])
-
-#pca = PCA(n_components=10)
-#data = pca.fit(train_data).transform(data)
 
 def print_stats(d,l,s,clf,f=None):
 	tp=0
@@ -239,6 +212,7 @@ def print_stats(d,l,s,clf,f=None):
 		if f==None:
 			c=clf.predict(d[x])
 		else:
+			print f(clf,d[x])
 			c=f(clf,d[x])<0.5
 		if l[x]==1:
 			if c==1:
@@ -251,16 +225,51 @@ def print_stats(d,l,s,clf,f=None):
 			else:
 				tn+=1
 	print "%s - FP:\t%10d,\tTN:\t%10d,\tTP:\t%10d,\tFN:\t%10d" % (s,fp,tn,tp,fn)
+
+
+if len(positives)==0:
+	data=negatives
+elif len(negatives)==0:
+	data=positives
+else:
+	data=np.append(negatives,positives,axis=0)
+
+raw_data=data.copy()
+labels=[0]*len(negatives)+[1]*len(positives)
+
+train=0
+if train==1:
+	data,filtered=filter_uncommon(data,m=0.01)
+	#data=raw_data
+	#filtered={'selected':range(512),'length':512}
+
+	#print len(negatives),len(positives), len(data)
+
+	#data = preprocessing.scale(data)
+
+	test_data=[]
+	test_labels=[]
+	train_data=[]
+	train_labels=[]
+	for x in range(len(data)):
+		if x%2==0:
+			test_data.append(data[x])
+			test_labels.append(labels[x])
+		else:
+			train_data.append(data[x])
+			train_labels.append(labels[x])
+
+	#pca = PCA(n_components=10)
+	#data = pca.fit(train_data).transform(data)
+
 	
 
-train=1
-if train==1:
 	print "Training model..."
 	#neigh = KNeighborsClassifier(n_neighbors=10)
 	#neigh.fit(train_data, train_labels) 
 	#clf = NearestCentroid()
 	#clf=svm.SVC()#kernel='linear')#class_weight='auto')
-	#clf=svm.LinearSVC(class_weight='auto')
+	#clf=svm.LinearSVC()#class_weight='auto')
 	#clf = tree.DecisionTreeClassifier()
 	clf = LogisticRegression(penalty=penalty)
 	#clf = RandomizedLogisticRegression()
