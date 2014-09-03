@@ -178,7 +178,7 @@ def read_and_process(fn):
 	d=mask(d)
 	d=drop_half(d)
 	d=tops(d)
-	#d=blur(d)
+	d=blur(d)
 	#d=rand_shift(d)
 	print "Loaded %d from %s" % (len(d), fn)
 	return d
