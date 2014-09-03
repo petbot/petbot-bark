@@ -340,6 +340,11 @@ void * read_audio(void * n) {
 
 
 void * process_audio(void * n) {
+	double * means = (double * )malloc(sizeof(double)*buffer_frames);
+	if (means==NULL) {
+		fprintf(stdout, "failed to allocate buffer for means\n");
+		exit(1);
+	}
 	//fprintf(stdout,"starting process_audio\n");
 	int half=0;
 	while (1) {
@@ -352,8 +357,6 @@ void * process_audio(void * n) {
 				sem_post(&s_exit);
 				return NULL;
 			}
-		
-
 
 			//COPY TO GPU		
 			struct GPU_FFT_COMPLEX *gpu_base = gpu_fft->in+i*gpu_fft->step;
@@ -363,10 +366,8 @@ void * process_audio(void * n) {
 				gpu_base[j].im=0;
 			}
 
-
 			//COPY TO CPU
 			short_to_double(buffer_in[i+half*NUM_BUFFERS/2],raw_buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
-			
 		}
 
 		unsigned t[4];
@@ -385,6 +386,8 @@ void * process_audio(void * n) {
 		t[3]=Microseconds();
 
 		fprintf(stdout, "GPU %u vs CPU %u\n",t[1]-t[0],t[3]-t[2]);*/
+
+		
 	
 		if (exit_now==1) {
 			sem_post(&s_done);

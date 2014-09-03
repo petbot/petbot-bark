@@ -86,6 +86,87 @@ double logit(double * v) {
 	return 1.0/(1+exp(c));
 }
 
+
+
+void prepare_input(double ** b, int buffers, int length) {
+	double * means = (double*)malloc(sizeof(double)*length);
+	if (means==NULL) {
+		fprintf(stderr,"Failed to malloc buffer!\n");
+	}
+	memset(means,0,sizeof(double)*length);
+
+	//mean normalize
+	int i,j;
+	for (i=0; i<buffers; i++) {
+		for (j=0; j<length; j++) {
+			means[j]+=b[i][j];
+		}
+	}
+	for (j=0; i<length; j++) {
+		means[j]/=length;
+	}
+	for (i=0; i<buffers; i++) {
+		for (j=0; j<length; j++) {
+			b[i][j]-=means[j];
+		}
+	}
+	free(means);	
+
+	//foldback and abs
+	for (i=0; i<buffers; i++) {
+		for (j=0; j<length/2; j++) {
+			b[i][j]=fabs(b[i][j])+fabs(b[i][length-1-j]);
+		}
+	}
+
+	//drop half, but not really just skip it
+
+	//blur
+	for (i=0; i<buffers; i++) {
+		for (i=2; i<length/4-2; i++) {
+			b[i][j]=b[i][j-2]*0.1+b[i][j]*0.2+b[i][j]*0.4+b[i][j+1]*0.2+b[i][j]*0.1;	
+		}
+	}
+	
+	//mask
+	for (i=0; i<buffers; i++) {
+		b[i][0]=b[i][1]=b[i][2]=0;
+	}
+
+	//get the top 20 values
+	int m;	
+	for (m=0; m<20; m++) {
+		for (i=0; i<buffers/4; i++) {
+			double mx=0.0;
+			int idx=0;
+			for (j=0; j<length/2; j++) {
+				if (b[i][j]>mx) {
+					mx=b[i][j];	
+					idx=j;
+				}
+			}
+			b[i][idx]=-b[i][idx];
+		}
+	}
+	for (i=0; i<buffers; i++) {
+		for (j=0; j<length/4; j++) {
+			if (b[i][j]>0) {
+				b[i][j]=0;
+			} else {
+				b[i][j]=-b[i][j];
+			}
+		}
+	}
+
+	//take the log
+	for (i=0; i<buffers; i++) {
+		for (j=0; j<length/4; j++) {
+			b[i][j]=log(b[i][j]);
+		}
+	}
+		
+}
+
 int read_model(char * filename) {
 	model_size=0;
 	FILE * fptr = fopen(filename,"r");
