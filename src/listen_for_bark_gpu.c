@@ -409,11 +409,14 @@ void * process_audio(void * n) {
 		}
 
 
+		//prepare input
+		prepare_input(gpu_buffer_out+half*NUM_BUFFERS/2,10,buffer_frames);
+
 
 		for (i=0; i<NUM_BUFFERS/2; i++) {
 			double d = logit(gpu_buffer_out[i+half*NUM_BUFFERS/2]);
 			add_bark(d);
-			//fprintf(stdout,"%f\n",sum_barks());
+			fprintf(stdout,"%f\n",sum_barks());
 			if (barks_total>NUM_BARKS && sum_barks()<BARK_THRESHOLD) {
 				time_t result = time(NULL);
 				printf("BARK detected at %s\n", ctime(&result));

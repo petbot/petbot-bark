@@ -40,7 +40,7 @@ void run_file(char * fn, int length) {
 	double ** vv = (double**)malloc(sizeof(double*)*10);
 	int idx;
 	for (idx=0; idx<10; idx++) {
-		vv[idx]=v+length*4;
+		vv[idx]=v+idx*length*4;
 	}
 	int vi=0;
 	while (fgets(line,BUFFER_SIZE,fptr)) {
@@ -73,7 +73,10 @@ void run_file(char * fn, int length) {
 		vi++;
 		if (vi%10==0) {
 			prepare_input(vv, 10, length*4);
-			fprintf(stdout,"%0.5lf\n",logit(vv[0]));
+			int z;
+			for (z=0; z<10; z++) {
+				fprintf(stdout,"%0.5lf\n",logit(vv[z]));
+			}
 			vi=0;
 		}
 	}	

@@ -30,7 +30,7 @@ double logit(double * v) {
 	double c = intercept;
 	//fprintf(stdout,"%lf intercept\n",intercept);
 	int i;
-	double tmp[model_size];
+	//double tmp[model_size];
 	/*for (i=0; i<model_size; i++) {
 		//fprintf(stdout, "%d %lf\n",i,w[i]);
 
@@ -57,7 +57,7 @@ double logit(double * v) {
 	//}
 
 	
-	//reduce by half
+	/*//reduce by half
 	for (i=0; i<model_size; i++) {
 		tmp[i]=fabs(v[i])+fabs(v[2*model_size-1-i]);
 	}
@@ -69,6 +69,10 @@ double logit(double * v) {
 			cc =w[i]*(tmp[i-2]*0.1+tmp[i-1]*0.2+tmp[i]*0.4+tmp[i+1]*0.2+tmp[i+2]*0.1);
 		}
 		c+=cc;
+	}*/
+
+	for (i=0; i<model_size; i++) {
+		c+= w[i]*v[i];
 	}
 
 	/*for (i=0; i<model_size/2; i++) {
@@ -93,23 +97,27 @@ void prepare_input(double ** b, int buffers, int length) {
 	if (means==NULL) {
 		fprintf(stderr,"Failed to malloc buffer!\n");
 	}
-	memset(means,0,sizeof(double)*length);
+	//memset(means,0,sizeof(double)*length);
 
 	//mean normalize
 	int i,j;
-	for (i=0; i<buffers; i++) {
+	for (j=0; j<length; j++) {
+		means[j]=b[0][j];
+	}
+	for (i=1; i<buffers; i++) {
 		for (j=0; j<length; j++) {
 			means[j]+=b[i][j];
 		}
 	}
 	for (j=0; j<length; j++) {
-		means[j]/=length;
+		means[j]/=buffers;
 	}
 	for (i=0; i<buffers; i++) {
 		for (j=0; j<length; j++) {
 			b[i][j]-=means[j];
 		}
 	}
+	
 	free(means);	
 
 	//foldback and abs
@@ -122,24 +130,28 @@ void prepare_input(double ** b, int buffers, int length) {
 	//drop half, but not really just skip it
 
 	//blur
+	double * b2  = (double*)malloc(sizeof(double)*length/4);
 	for (i=0; i<buffers; i++) {
+		memcpy(b2,b[i],sizeof(double)*length/4);
 		for (j=2; j<length/4-2; j++) {
-			b[i][j]=b[i][j-2]*0.1+b[i][j]*0.2+b[i][j]*0.4+b[i][j+1]*0.2+b[i][j]*0.1;	
+			b[i][j]=b2[j-2]*0.1+b2[j-1]*0.2+b2[j]*0.4+b2[j+1]*0.2+b2[j+2]*0.1;	
 		}
 	}
+	free(b2);
 	
 	//mask
 	for (i=0; i<buffers; i++) {
 		b[i][0]=b[i][1]=b[i][2]=0;
 	}
 
+
 	//get the top 20 values
 	int m;	
 	for (m=0; m<20; m++) {
-		for (i=0; i<buffers/4; i++) {
+		for (i=0; i<buffers; i++) {
 			double mx=0.0;
 			int idx=0;
-			for (j=0; j<length/2; j++) {
+			for (j=0; j<length/4; j++) {
 				if (b[i][j]>mx) {
 					mx=b[i][j];	
 					idx=j;
@@ -158,12 +170,14 @@ void prepare_input(double ** b, int buffers, int length) {
 		}
 	}
 
+
 	//take the log
 	for (i=0; i<buffers; i++) {
 		for (j=0; j<length/4; j++) {
 			b[i][j]=log(b[i][j]+1);
 		}
 	}
+
 		
 }
 
