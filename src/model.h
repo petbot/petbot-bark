@@ -16,5 +16,5 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 double logit(double * v);
-
+void prepare_input(double ** b, int buffers, int length);
 int read_model(char * filename);

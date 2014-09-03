@@ -36,8 +36,14 @@ void run_file(char * fn, int length) {
 
 
 	fgets(line,BUFFER_SIZE,fptr); //get rid of header
+	double * v = (double *)malloc(sizeof(double)*length*4*10);
+	double ** vv = (double**)malloc(sizeof(double*)*10);
+	int idx;
+	for (idx=0; idx<10; idx++) {
+		vv[idx]=v+length*4;
+	}
+	int vi=0;
 	while (fgets(line,BUFFER_SIZE,fptr)) {
-		double v[length*2];
 		//lets read in the v and then get the score
 		char * c, *p;
 		c=line;
@@ -53,18 +59,23 @@ void run_file(char * fn, int length) {
 
 			char t=*c;
 			*c='\0';
-			if (i>=(2*length)) {
+			if (i>=(4*length)) {
 				fprintf(stdout,"failed to read in model, length is off! %d vs %d, %s\n",i,length,p);
 				exit(1);
 			}
-			v[i++]=atof(p);
+			vv[vi][i++]=atof(p);
 			//fprintf(stderr,"FLOAT %lf, %d\n",v[i-1], i);	
 			if (t!='\0') {
 				c++;
 			}
 			p=c;
 		}
-		fprintf(stdout,"%0.5lf\n",logit(v));
+		vi++;
+		if (vi%10==0) {
+			prepare_input(vv, 10, length*4);
+			fprintf(stdout,"%0.5lf\n",logit(vv[0]));
+			vi=0;
+		}
 	}	
 }
 

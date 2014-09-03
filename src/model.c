@@ -102,7 +102,7 @@ void prepare_input(double ** b, int buffers, int length) {
 			means[j]+=b[i][j];
 		}
 	}
-	for (j=0; i<length; j++) {
+	for (j=0; j<length; j++) {
 		means[j]/=length;
 	}
 	for (i=0; i<buffers; i++) {
@@ -123,7 +123,7 @@ void prepare_input(double ** b, int buffers, int length) {
 
 	//blur
 	for (i=0; i<buffers; i++) {
-		for (i=2; i<length/4-2; i++) {
+		for (j=2; j<length/4-2; j++) {
 			b[i][j]=b[i][j-2]*0.1+b[i][j]*0.2+b[i][j]*0.4+b[i][j+1]*0.2+b[i][j]*0.1;	
 		}
 	}
@@ -161,7 +161,7 @@ void prepare_input(double ** b, int buffers, int length) {
 	//take the log
 	for (i=0; i<buffers; i++) {
 		for (j=0; j<length/4; j++) {
-			b[i][j]=log(b[i][j]);
+			b[i][j]=log(b[i][j]+1);
 		}
 	}
 		
