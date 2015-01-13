@@ -74,7 +74,7 @@ fftw_plan p;
 
 #define NUM_BARKS  8
 
-#define STORE_BARKS	32 //256
+#define STORE_BARKS	256
 
 int barks_total;
 double * barks;
@@ -582,7 +582,7 @@ char * to_json() {
 		s+=v;
 	}
 	int x=0;
-	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.1f }" , time_barks[send_bark], time(NULL),s+5);
+	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.1f }" , time_barks[send_bark], time(NULL),s);
 	//fprintf(stderr,"JSON : %s\n",json_buffer);
 	return json_buffer;
 }	
