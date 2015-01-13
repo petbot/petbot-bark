@@ -17,6 +17,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <fftw3.h>
 
 //#include <rfftw.h> 
+#include <curl/curl.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,23 +25,33 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <semaphore.h>
 #include <pthread.h>
 #include <time.h>
-
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <ctype.h>
 #include "model.h"
 #include "mailbox.h"
 #include "gpu_fft.h"
 
-
-
 #define CAMERA_USB_MIC_DEVICE "plughw:1,0"
-
 
 #define BARK_THRESHOLD 2.5
 
-	      
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
+
+int mb;
+
+
+char * json_buffer;
+char device_id[1024];
+
 sem_t s_ready; //means this many have been read and ready
 sem_t s_done; //means N/2 have been processed
 sem_t s_exit; //means N/2 have been processed
-
+sem_t s_upload; //means N/2 have been processed
 
 void short_to_double(double * real , signed short* shrt, int size) {
 	int i;
@@ -49,8 +60,9 @@ void short_to_double(double * real , signed short* shrt, int size) {
 	}
 }
 
-
 int buffer_frames = 2048;
+//int buffer_frames = 2048*16;
+
 unsigned int rate = 8000; //44100; //22050; //44100;
 #define NUM_BUFFERS 20
 signed short ** raw_buffer_in;
@@ -61,12 +73,30 @@ snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 fftw_plan p;
 
 #define NUM_BARKS  8
+
+#define STORE_BARKS	32 //256
+
 int barks_total;
 double * barks;
+
+double * store_barks;
+unsigned time_barks[2];
+
+int store_bark,send_bark;
+int stored_barks=0;
 double barks_sum;
 
-
 int exit_now=0;
+
+double mean=0.0;
+int uploads=0;
+
+
+unsigned microseconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec*1000000 + ts.tv_nsec/1000;
+}
 
 void init_barks() {
 	barks=(double*)malloc(sizeof(double)*NUM_BARKS);
@@ -75,16 +105,53 @@ void init_barks() {
 		exit(1);
 	}
 	memset(barks,0,sizeof(double)*NUM_BARKS);
+
+	store_barks=(double*)malloc(sizeof(double)*STORE_BARKS*2);
+	if (store_barks==NULL) {
+		fprintf(stderr, "Failed to malloc for store barks\n");
+		exit(1);
+	}
+	memset(store_barks,0,sizeof(double)*NUM_BARKS);
+	
+	store_bark=0;
+	send_bark=0;
+	stored_barks=0;
+
+	json_buffer=malloc(sizeof(char)*5*STORE_BARKS+256);
+	if (json_buffer==NULL) {
+		fprintf(stderr,"FAILED TO ALLOCATE JSON BUFFER\n");
+		exit(1);
+	}
+	
+	time_barks[store_bark]=time(NULL); //microseconds();
+
 	barks_total=0;
 	barks_sum=0;
 }
 
-void add_bark(double b) {
-	barks[(barks_total++)%NUM_BARKS]=b;
+
+void add_bark_sum(double s) {
+	if (stored_barks==STORE_BARKS) {
+		//switch banks!
+		//try to grab the mutex? -- assume already sent!
+		if (store_bark!=send_bark) {
+			return ; //not done sending previous!
+		}
+		stored_barks=0;
+		store_bark=1-store_bark; //use the other bank
+		time_barks[store_bark]=time(NULL); //microseconds();
+		sem_post(&s_upload);
+	}
+	store_barks[STORE_BARKS*store_bark+(stored_barks++)]=s;
+	/*if (stored_barks%10==0) {
+		fprintf(stderr,"STORED %d bark sin bank %d\n",stored_barks,store_bark);
+	}*/
 }
 
 
-
+void add_bark(double b) {
+	barks[(barks_total++)%NUM_BARKS]=b;
+}
 
 double sum_barks() {
 	double s=0.0;
@@ -95,22 +162,18 @@ double sum_barks() {
 	return s;
 }
 
-
-
-
 struct GPU_FFT *gpu_fft;
 
 int init_gpu() {
-	fprintf(stdout,"GPU init\n");
+	//fprintf(stdout,"GPU init\n");
 	int log2_N=11;
 	//int jobs=1;
 	//int loops=1;
 	//int N = 1<<log2_N; //2048;
-	int mb = mbox_open();
+	mb = mbox_open();
 
     	//int ret = gpu_fft_prepare(mb, log2_N, GPU_FFT_REV, NUM_BUFFERS/2, &gpu_fft); // call once
     	int ret = gpu_fft_prepare(mb, log2_N, GPU_FFT_FWD, NUM_BUFFERS/2, &gpu_fft); // call once
-
 
     	switch(ret) {
         	case -1: printf("Unable to enable V3D. Please check your firmware is up to date.\n"); return -1;
@@ -118,11 +181,13 @@ int init_gpu() {
         	case -3: printf("Out of memory.  Try a smaller batch or increase GPU memory.\n");     return -1;
     	}	
 	
-	
-
 	return 0;
 }
 
+
+void close_gpu() {
+	mbox_close(mb);
+}
 
 int free_buffers() {
 	free(buffer_in[0]);
@@ -133,7 +198,7 @@ int free_buffers() {
 }
 
 int init_buffers() {
-	fprintf(stdout,"Buffer init\n");
+	//fprintf(stdout,"Buffer init\n");
 	
 	double ** p = (double **)malloc(sizeof(double*)*NUM_BUFFERS*3);
 	if (p==NULL) {
@@ -201,7 +266,6 @@ void fft_gpu(double * b_in, double * b_out,  int N) {
 		
 }
 
-
 double fft_gpu_compare(double * d1, double *d2,  int N) {
 	double x=0.0;
 	int i;
@@ -219,7 +283,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "audio interface opened\n");
 		   
   if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
@@ -227,7 +290,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "hw_params allocated\n");
 				 
   if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) {
@@ -235,7 +297,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "hw_params initialized\n");
 	
   if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
@@ -243,7 +304,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "hw_params access setted\n");
 	
   if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) {
@@ -251,7 +311,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "hw_params format setted\n");
 	
   if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) {
@@ -259,7 +318,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
-	
   //fprintf(stdout, "hw_params rate setted\n");
  
   if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
@@ -267,7 +325,6 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "hw_params channels setted\n");
 	
   if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) {
@@ -275,11 +332,9 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "hw_params setted\n");
 	
   snd_pcm_hw_params_free (hw_params);
- 
   //fprintf(stdout, "hw_params freed\n");
 	
   if ((err = snd_pcm_prepare (capture_handle)) < 0) {
@@ -287,17 +342,9 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
- 
   //fprintf(stdout, "audio interface prepared\n");
-
 }
 
-
-unsigned Microseconds(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return ts.tv_sec*1000000 + ts.tv_nsec/1000;
-}
 
 void init_fftw3() {
   p = fftw_plan_r2r_1d(buffer_frames, buffer_in[0], cpu_buffer_out[0] , FFTW_R2HC, FFTW_ESTIMATE);
@@ -374,9 +421,9 @@ void * process_audio(void * n) {
 
 		//now we read in NUM_BUFFERS/2 chunks to GPU lets run this!
 	    	//fprintf(stdout,"process_audio running gpu fft\n");
-		t[0]=Microseconds();
+		t[0]=microseconds();
 		gpu_fft_execute(gpu_fft); 
-		t[1]=Microseconds();
+		t[1]=microseconds();
 		//uncomment to run CPU also
 	    	/*fprintf(stdout,"process_audio running cpu fft\n");
 		t[2]=Microseconds();
@@ -416,12 +463,12 @@ void * process_audio(void * n) {
 		for (i=0; i<NUM_BUFFERS/2; i++) {
 			double d = logit(gpu_buffer_out[i+half*NUM_BUFFERS/2]);
 			add_bark(d);
-			fprintf(stdout,"%f\n",sum_barks());
+			//fprintf(stdout,"%f\n",sum_barks());
+			add_bark_sum(sum_barks());
 			if (barks_total>NUM_BARKS && sum_barks()<BARK_THRESHOLD) {
 				time_t result = time(NULL);
 				printf("BARK detected at %s\n", ctime(&result));
 			}
-			
 		}
 
 
@@ -454,13 +501,199 @@ void * process_audio(void * n) {
 	
 }
 
+void cleanup() {
+  //wait for threads to exit
+  gpu_fft_release(gpu_fft); // Videocore memory lost if not freed !
+  fftw_destroy_plan(p);
+  close_gpu();
+  snd_pcm_close (capture_handle);
+
+  int i;
+  for (i=0; i<NUM_BUFFERS; i++) {
+	free(raw_buffer_in[i]);
+	free(buffer_in[i]);
+	free(cpu_buffer_out[i]);
+	free(gpu_buffer_out[i]);
+  }
+  free_buffers();
+  curl_global_cleanup();
+
+}
+
+
+void signal_callback_handler(int signum) {
+   printf("Caught signal %d\n",signum);
+   cleanup();
+   exit(signum);
+}
+
+
+
+int cmp(const void *x, const void *y) {
+  double xx = *(double*)x, yy = *(double*)y;
+  if (xx < yy) return -1;
+  if (xx > yy) return  1;
+  return 0;
+}
+
+void update_mean(int bank, double scale) {
+
+	//lets get the median instead...
+	qsort(store_barks+STORE_BARKS*send_bark, STORE_BARKS, sizeof(double), cmp);
+	double median=store_barks[STORE_BARKS*send_bark+STORE_BARKS/2];
+	mean=median*scale+(1-scale)*median;
+	//fprintf(stderr,"MEAN IS %lf\n",mean);	
+	//getting the mean
+	/*
+	int i;
+	double s=0.0;
+	for (i=0; i<STORE_BARKS; i++) {
+		s+=store_barks[STORE_BARKS*send_bark+i];
+	}	
+	s/=STORE_BARKS;
+	
+	mean=mean*scale+(1-scale)*s;*/
+}
+
+char * to_json() {
+
+	//send all
+	/*int x=0;
+	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": [ " , time_barks[send_bark], microseconds());
+
+	//lets subtract out the mean
+	int i;	
+	for (i=0; i<STORE_BARKS-1; i++) {
+		double v = MAX(mean-store_barks[STORE_BARKS*send_bark+i],0);
+		x+=sprintf(json_buffer+x,"%0.1f,", v);
+	}
+	double v = MAX(mean-store_barks[STORE_BARKS*send_bark+i],0);
+	x+=sprintf(json_buffer+x,"%0.1f", v);
+	x+=sprintf(json_buffer+x," ] }");
+	fprintf(stderr,"JSON : %s\n",json_buffer);
+	return json_buffer;*/
+
+	//send sum
+	//lets subtract out the mean
+	double s=0.0;
+	int i;
+	for (i=0; i<STORE_BARKS; i++) {
+		double v = MAX(mean-store_barks[STORE_BARKS*send_bark+i],0);
+		s+=v;
+	}
+	int x=0;
+	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.1f }" , time_barks[send_bark], time(NULL),s+5);
+	//fprintf(stderr,"JSON : %s\n",json_buffer);
+	return json_buffer;
+}	
+
+void * upload_barks(void * n ) {
+	while (exit_now!=1) { 
+		sem_wait(&s_upload); //wait for data to become available
+		if (exit_now==1) {
+			sem_post(&s_exit);
+			return NULL;
+		}
+	  
+		if (uploads==0) {
+	  		update_mean(send_bark,0); //set the mean
+		} else {
+	  		update_mean(send_bark,0.5); //set the mean
+
+			to_json();
+			CURL *curl;
+			CURLcode res;
+
+			/* get a curl handle */
+			curl = curl_easy_init();
+			if(curl) {
+				struct curl_slist *headers = NULL;
+				headers = curl_slist_append(headers, "Accept: application/json");
+				headers = curl_slist_append(headers, "Content-Type: application/json");
+				headers = curl_slist_append(headers, "charsets: utf-8");
+
+				curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers); 
+				/* First set the URL that is about to receive our POST. This URL can
+				   just as well be a https:// URL if that is what should receive the
+				   data. */
+				char url[1024];
+				sprintf(url, "http://petbot.ca:1010/barks/%s", device_id);
+				//fprintf(stderr,"URL is %s\n",url);
+				curl_easy_setopt(curl, CURLOPT_URL, url);
+				/* Now specify the POST data */
+				curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_buffer);
+
+				/* Perform the request, res will get the return code */
+				res = curl_easy_perform(curl);
+				/* Check for errors */
+				if(res != CURLE_OK) {
+					fprintf(stderr, "curl_easy_perform() failed: %s\n",curl_easy_strerror(res));
+				}
+				/* always cleanup */
+				curl_easy_cleanup(curl);
+			}
+		}
+   
+		send_bark=1-send_bark;
+		uploads++;
+	}
+	sem_post(&s_exit);
+	return NULL;
+}
+
+
+void read_device_id() {
+	FILE * fptr= fopen("/proc/cpuinfo","r");
+	if (fptr==NULL) {
+		fprintf(stderr,"failed to read device id\n");
+		exit(1);
+	}
+	char buffer[2048];
+	size_t r = fread(buffer, 1, 2048, fptr);
+	buffer[r-1]='\0';
+	int i=0;
+	while (!isalnum(buffer[r-i])) {
+		buffer[r-i]='\0';
+		i++;
+	} 
+	while (isalnum(buffer[r-i])) {
+		i++;
+	}
+	i--;
+	strcpy(device_id,buffer+r-i);
+	return;
+}
 
 int main (int argc, char *argv[]) {
+	signal(SIGINT, signal_callback_handler);
+        signal(SIGTERM, signal_callback_handler);
   assert(buffer_frames%2==0);
-  fprintf(stdout,"reading model\n");
+  
+  //fprintf(stdout,"reading model\n");
 
-  read_model("./model");
-  fprintf(stdout,"starting inits\n");
+  if (argc!=2) {
+      fprintf(stdout,"%s model_file\n",argv[0]);
+      exit(1);
+  }
+
+ 
+  char * model_fn=argv[1];
+
+  read_device_id();
+
+  unlink(DEVICE_FILE_NAME); //dont really care about return value, just check mknod
+
+  //dev_t d = makedev(major(100),minor(0));
+  dev_t d = makedev(100,0);
+  int r = mknod(DEVICE_FILE_NAME, S_IFCHR | S_IROTH | S_IRGRP | S_IRUSR | S_IWUSR, d);
+  if (r<0) {
+	fprintf(stderr,"Something went wrong with making file\n");
+	exit(1);
+  }
+
+  read_model(model_fn);
+  //fprintf(stdout,"starting inits\n");
+  curl_global_init(CURL_GLOBAL_ALL);
   init_barks();
   init_audio();
   init_buffers();
@@ -470,6 +703,8 @@ int main (int argc, char *argv[]) {
   //set up the semaphores
   sem_init(&s_ready, 0, 0); 
   sem_init(&s_done, 0, 2); 
+  sem_init(&s_upload, 0, 0); 
+  sem_init(&s_exit, 0, 0); 
 
 
   //compute the output frequencies
@@ -485,9 +720,9 @@ int main (int argc, char *argv[]) {
 	fprintf(stdout, "%f%c" , freq[i], (i==buffer_frames-1) ?  '\n' : ',');
   }*/
 
-  fprintf(stdout,"starting threads\n");
+  //fprintf(stdout,"starting threads\n");
 
-  pthread_t read_thread, process_thread;
+  pthread_t read_thread, process_thread, upload_thread;
 
   int iret1 = pthread_create( &read_thread, NULL, read_audio, NULL);
   if(iret1) {
@@ -501,32 +736,27 @@ int main (int argc, char *argv[]) {
     exit(1);
   }
 
+  int iret3 = pthread_create( &upload_thread, NULL, upload_barks, NULL);
+  if(iret3) {
+    fprintf(stderr,"Error - pthread_create() return code: %d\n",iret1);
+    exit(1);
+  }
 
 
   char line[2056];
   while (fgets(line, 2056, stdin)) {
-	fprintf(stdout,"still here!\n");
+	//fprintf(stdout,"still here!\n");
   }
-  fprintf(stdout,"Exiting!\n"); 
+  //fprintf(stdout,"Exiting!\n"); 
   exit_now=1;
+  sem_post(&s_upload);
  
   sem_wait(&s_exit);
   sem_wait(&s_exit);
-	
-  //wait for threads to exit
-  gpu_fft_release(gpu_fft); // Videocore memory lost if not freed !
-  fftw_destroy_plan(p);
-  snd_pcm_close (capture_handle);
+  sem_wait(&s_exit);
 
-  int i;
-  for (i=0; i<NUM_BUFFERS; i++) {
-	free(raw_buffer_in[i]);
-	free(buffer_in[i]);
-	free(cpu_buffer_out[i]);
-	free(gpu_buffer_out[i]);
-  }
-  
-  free_buffers();
+  cleanup();
+	
   return 0;
   
 
