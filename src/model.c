@@ -148,7 +148,7 @@ void prepare_input(double ** b, int buffers, int length) {
 
 
 	//get the top 20 values
-	/*int m;	
+	int m;	
 	for (m=0; m<TOPS; m++) {
 		for (i=0; i<buffers; i++) {
 			double mx=0.0;
@@ -170,7 +170,7 @@ void prepare_input(double ** b, int buffers, int length) {
 				b[i][j]=-b[i][j];
 			}
 		}
-	}*/
+	}
 
 
 	//take the log
