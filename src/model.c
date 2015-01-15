@@ -19,6 +19,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h>
 #include <math.h>
 
+#include "model.h"
+
 double intercept;
 double * w;
 int model_size;
@@ -146,8 +148,8 @@ void prepare_input(double ** b, int buffers, int length) {
 
 
 	//get the top 20 values
-	int m;	
-	for (m=0; m<20; m++) {
+	/*int m;	
+	for (m=0; m<TOPS; m++) {
 		for (i=0; i<buffers; i++) {
 			double mx=0.0;
 			int idx=0;
@@ -168,7 +170,7 @@ void prepare_input(double ** b, int buffers, int length) {
 				b[i][j]=-b[i][j];
 			}
 		}
-	}
+	}*/
 
 
 	//take the log

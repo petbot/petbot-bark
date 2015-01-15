@@ -15,6 +15,8 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#define TOPS 100
+
 double logit(double * v);
 void prepare_input(double ** b, int buffers, int length);
 int read_model(char * filename);
