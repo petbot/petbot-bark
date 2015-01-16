@@ -178,6 +178,10 @@ int main (int argc, char *argv[]) {
     memset(power_spectrum, 0, sizeof(double)*buffer_frames);
 
     //run the fft    
+    int y; 
+    for (y=0; y<buffer_frames; y++) {
+	buffer_in[y]=y;
+    }
     fftw_execute(p);
 
     //power_spectrum
@@ -209,7 +213,7 @@ An FFTW_FORWARD transform corresponds to a sign of -1 in the exponent of the DFT
 	fprintf(stdout, "%f%c" ,buffer_out[j],(j==buffer_frames-1) ? '\n' : ',');
     }
 
-    
+    exit(1);
   }
  
   fftw_destroy_plan(p);

@@ -42,6 +42,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
+//#define COMPARE
+#define CPU
+//#define GPU
+
 int mb;
 
 
@@ -74,7 +78,7 @@ fftw_plan p;
 
 #define NUM_BARKS  8
 
-#define STORE_BARKS	256
+#define STORE_BARKS	64 //256
 
 int barks_total;
 double * barks;
@@ -149,17 +153,24 @@ void add_bark_sum(double s) {
 }
 
 
+
+double sum_of_barks=0.0;
 void add_bark(double b) {
+	sum_of_barks-=barks[barks_total%NUM_BARKS];
+	sum_of_barks+=b;
 	barks[(barks_total++)%NUM_BARKS]=b;
 }
 
 double sum_barks() {
+	return sum_of_barks; 
+	/*
 	double s=0.0;
 	int i;
 	for (i=0; i<NUM_BARKS; i++) {
 		s+=barks[i];
 	}
-	return s;
+	fprintf(stderr,"DIFF IS %f %f %f\n",s,sum_of_barks,s-sum_of_barks);
+	return s;*/
 }
 
 struct GPU_FFT *gpu_fft;
@@ -404,44 +415,32 @@ void * process_audio(void * n) {
 				sem_post(&s_exit);
 				return NULL;
 			}
-
+#ifdef GPU
 			//COPY TO GPU		
 			struct GPU_FFT_COMPLEX *gpu_base = gpu_fft->in+i*gpu_fft->step;
+			
 			int j;
+	
 			for (j=0; j<buffer_frames; j++) {
+				raw_buffer_in[i+half*NUM_BUFFERS/2][j]=(j*j)%101; //DEBUG
 				gpu_base[j].re=raw_buffer_in[i+half*NUM_BUFFERS/2][j];
 				gpu_base[j].im=0;
 			}
-
+#endif
+#ifdef CPU
 			//COPY TO CPU
 			short_to_double(buffer_in[i+half*NUM_BUFFERS/2],raw_buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
+#endif			
 		}
 
 		unsigned t[4];
 
 		//now we read in NUM_BUFFERS/2 chunks to GPU lets run this!
 	    	//fprintf(stdout,"process_audio running gpu fft\n");
+#ifdef GPU
 		t[0]=microseconds();
 		gpu_fft_execute(gpu_fft); 
 		t[1]=microseconds();
-		//uncomment to run CPU also
-	    	/*fprintf(stdout,"process_audio running cpu fft\n");
-		t[2]=Microseconds();
-		for (i=0; i<NUM_BUFFERS/2; i++) {
-			fftw_execute_r2r(p,buffer_in[i+half*NUM_BUFFERS/2],cpu_buffer_out[i+half*NUM_BUFFERS/2]);
-		}	
-		t[3]=Microseconds();
-
-		fprintf(stdout, "GPU %u vs CPU %u\n",t[1]-t[0],t[3]-t[2]);*/
-
-		
-	
-		if (exit_now==1) {
-			sem_post(&s_done);
-			sem_post(&s_exit);
-			return NULL;
-		}
-
 		//copy out GPU vallues
 		for (i=0; i<NUM_BUFFERS/2; i++) {
 			struct GPU_FFT_COMPLEX *gpu_base = gpu_fft->out+i*gpu_fft->step;
@@ -454,29 +453,37 @@ void * process_audio(void * n) {
 				gpu_buffer_out[i+half*NUM_BUFFERS/2][j+buffer_frames/2]=-gpu_base[j+buffer_frames/2].im; //i must have missed something somewhere, add -1 to fix..
 			}
 		}
+#endif
 
-
-		//prepare input
-		prepare_input(gpu_buffer_out+half*NUM_BUFFERS/2,10,buffer_frames);
-
-
+#ifdef CPU
+	    	//fprintf(stdout,"process_audio running cpu fft\n");
+		t[2]=microseconds();
 		for (i=0; i<NUM_BUFFERS/2; i++) {
-			double d = logit(gpu_buffer_out[i+half*NUM_BUFFERS/2]);
-			add_bark(d);
-			//fprintf(stdout,"%f\n",sum_barks());
-			add_bark_sum(sum_barks());
-			if (barks_total>NUM_BARKS && sum_barks()<BARK_THRESHOLD) {
-				time_t result = time(NULL);
-				printf("BARK detected at %s\n", ctime(&result));
-			}
-		}
+			fftw_execute_r2r(p,buffer_in[i+half*NUM_BUFFERS/2],cpu_buffer_out[i+half*NUM_BUFFERS/2]);
+			cpu_buffer_out[i][buffer_frames/2]=0;
+		}	
+		t[3]=microseconds();
+#endif
+		//uncomment to run CPU also
 
 
-		/*for (i=0; i<buffer_frames; i++) {
-			fprintf(stdout,"%0.3f%c" , cpu_buffer_out[0][i], (buffer_frames-1==i) ? '\n' : ',');
+		
+	
+		if (exit_now==1) {
+			sem_post(&s_done);
+			sem_post(&s_exit);
+			return NULL;
 		}
+
+#ifdef COMPARE
+		fprintf(stdout, "GPU %u vs CPU %u\n",t[1]-t[0],t[3]-t[2]);
+		
 		for (i=0; i<buffer_frames; i++) {
-			fprintf(stdout,"%0.3f%c" , gpu_buffer_out[0][i], (buffer_frames-1==i) ? '\n' : ',');
+			fprintf(stdout,"%0.3f%c" , cpu_buffer_out[0][i], (buffer_frames-1==i || i==buffer_frames/2-1) ? '\n' : ',');
+		}
+
+		for (i=0; i<buffer_frames; i++) {
+			fprintf(stdout,"%0.3f%c" , gpu_buffer_out[0][i], (buffer_frames-1==i || i==buffer_frames/2-1) ? '\n' : ',');
 		}
 
 		//compare GPU and CPU on values
@@ -488,7 +495,34 @@ void * process_audio(void * n) {
 				d+=fabs(gpu_buffer_out[i+half*NUM_BUFFERS/2][j]-cpu_buffer_out[i+half*NUM_BUFFERS/2][j]);	
 			}	
 			fprintf(stdout,"diff is %f\n", d);
-		}*/
+		}
+			exit(1);
+#endif
+
+		//prepare input
+#ifdef GPU
+		prepare_input(gpu_buffer_out+half*NUM_BUFFERS/2,10,buffer_frames);
+#endif
+#ifdef CPU
+		prepare_input(cpu_buffer_out+half*NUM_BUFFERS/2,10,buffer_frames);
+#endif
+
+
+		for (i=0; i<NUM_BUFFERS/2; i++) {
+#ifdef GPU
+			const double d = logit(gpu_buffer_out[i+half*NUM_BUFFERS/2]);
+#endif
+#ifdef CPU
+			const double d = logit(cpu_buffer_out[i+half*NUM_BUFFERS/2]);
+#endif
+			add_bark(d);
+			//fprintf(stdout,"%f\n",sum_barks());
+			add_bark_sum(sum_barks());
+			if (barks_total>NUM_BARKS && sum_barks()<BARK_THRESHOLD) {
+				time_t result = time(NULL);
+				printf("BARK detected at %s\n", ctime(&result));
+			}
+		}
 		
 		sem_post(&s_done);
 		if (exit_now==1) {
@@ -503,9 +537,13 @@ void * process_audio(void * n) {
 
 void cleanup() {
   //wait for threads to exit
+#ifdef GPU
   gpu_fft_release(gpu_fft); // Videocore memory lost if not freed !
-  fftw_destroy_plan(p);
   close_gpu();
+#endif
+#ifdef CPU
+  fftw_destroy_plan(p);
+#endif
   snd_pcm_close (capture_handle);
 
   int i;
@@ -578,12 +616,13 @@ char * to_json() {
 	double s=0.0;
 	int i;
 	for (i=0; i<STORE_BARKS; i++) {
-		double v = MAX(mean-store_barks[STORE_BARKS*send_bark+i],0);
+		//double v = MAX(mean-store_barks[STORE_BARKS*send_bark+i],0);
+		double v = mean-store_barks[STORE_BARKS*send_bark+i];
 		s+=v;
 	}
 	int x=0;
 	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.1f }" , time_barks[send_bark], time(NULL),s);
-	//fprintf(stderr,"JSON : %s\n",json_buffer);
+	fprintf(stderr,"JSON : %s, %e\n",json_buffer,s);
 	return json_buffer;
 }	
 
@@ -598,7 +637,7 @@ void * upload_barks(void * n ) {
 		if (uploads==0) {
 	  		update_mean(send_bark,0); //set the mean
 		} else {
-	  		update_mean(send_bark,0.5); //set the mean
+	  		update_mean(send_bark,0.9); //set the mean
 
 			to_json();
 			CURL *curl;
@@ -697,8 +736,12 @@ int main (int argc, char *argv[]) {
   init_barks();
   init_audio();
   init_buffers();
+#ifdef GPU
   init_gpu();
+#endif
+#ifdef CPU
   init_fftw3();
+#endif
 
   //set up the semaphores
   sem_init(&s_ready, 0, 0); 
