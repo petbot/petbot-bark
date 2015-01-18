@@ -64,11 +64,11 @@ void short_to_double(double * real , signed short* shrt, int size) {
 	}
 }
 
-int buffer_frames = 2048*4;
+int buffer_frames = 2048;
 //int buffer_frames = 2048*16;
 
 unsigned int rate = 8000; //44100; //22050; //44100;
-#define NUM_BUFFERS 5
+#define NUM_BUFFERS 20
 signed short ** raw_buffer_in;
 double **buffer_in, **cpu_buffer_out, **gpu_buffer_out;
 snd_pcm_t *capture_handle;
