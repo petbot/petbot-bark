@@ -14,7 +14,11 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include <fftw3.h>
+
+//#define COMPARE
+#define CPU
+//#define GPU
+
 
 //#include <rfftw.h> 
 #include <curl/curl.h>
@@ -31,9 +35,17 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <fcntl.h>
 #include <unistd.h>
 #include <ctype.h>
+
 #include "model.h"
+
+#ifdef GPU
 #include "mailbox.h"
 #include "gpu_fft.h"
+#endif
+
+#ifdef CPU
+#include <fftw3.h>
+#endif
 
 #define CAMERA_USB_MIC_DEVICE "plughw:1,0"
 
@@ -42,9 +54,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-//#define COMPARE
-#define CPU
-//#define GPU
 
 int mb;
 
@@ -64,11 +73,10 @@ void short_to_double(double * real , signed short* shrt, int size) {
 	}
 }
 
-int buffer_frames = 2048*4;
+int buffer_frames = 2048*8;
 //int buffer_frames = 2048*16;
 
-unsigned int rate = 8000; //44100; //22050; //44100;
-#define NUM_BUFFERS 5
+#define NUM_BUFFERS 4
 signed short ** raw_buffer_in;
 double **buffer_in, **cpu_buffer_out, **gpu_buffer_out;
 snd_pcm_t *capture_handle;
@@ -78,12 +86,16 @@ fftw_plan p;
 
 #define NUM_BARKS  8
 #define BARK_BANK_SIZE	64 //256
-
-#define WINDOW_SIZE 256
-#define OVERLAP 110
+unsigned int rate = 8000; //44100; //22050; //44100;
+const int window_size= 256;
+const int window_shift = 110;
+#define NON_OVERLAP (window_size-window_shift)
+#define WINDOWS (1+(buffer_frames-window_size)/window_shift)
 
 int barks_total;
 double * barks;
+
+double * hanning_window;
 
 double * bark_bank;
 unsigned time_barks[2];
@@ -96,6 +108,24 @@ int exit_now=0;
 
 double mean=0.0;
 int uploads=0;
+
+
+double
+hanning (int i, int nn) {
+  return ( 0.5 * (1.0 - cos (2.0*M_PI*(double)i/(double)(nn-1))) );
+}
+
+double stddev(double * d, int n) {
+    double mean=0.0, sum_deviation=0.0;
+    int i;
+    for(i=0; i<n;++i) {
+        mean+=d[i];
+    }
+    mean=mean/n;
+    for(i=0; i<n;++i)
+    sum_deviation+=(d[i]-mean)*(d[i]-mean);
+    return sqrt(sum_deviation/n);           
+}
 
 
 unsigned microseconds(void) {
@@ -175,6 +205,7 @@ double sum_barks() {
 	return s;*/
 }
 
+#ifdef GPU
 struct GPU_FFT *gpu_fft;
 
 int init_gpu() {
@@ -201,6 +232,7 @@ int init_gpu() {
 void close_gpu() {
 	mbox_close(mb);
 }
+#endif
 
 int free_buffers() {
 	free(buffer_in[0]);
@@ -213,28 +245,64 @@ int free_buffers() {
 int init_buffers() {
 	//fprintf(stdout,"Buffer init\n");
 	
-	double ** p = (double **)malloc(sizeof(double*)*NUM_BUFFERS*3);
+	double ** p = (double **)malloc(sizeof(double*)*NUM_BUFFERS);
 	if (p==NULL) {
 		fprintf(stdout,"Failed to malloc buffer pointers\n");
 		exit(1);
 	}
 	buffer_in=p;
-	cpu_buffer_out=p+NUM_BUFFERS;
-	gpu_buffer_out=p+NUM_BUFFERS*2;
+
+	p = (double **)malloc(sizeof(double*)*WINDOWS*NUM_BUFFERS);
+	if (p==NULL) {
+		fprintf(stdout,"Failed to malloc buffer pointers\n");
+		exit(1);
+	}
+	cpu_buffer_out=p;
+
+	p = (double **)malloc(sizeof(double*)*WINDOWS*NUM_BUFFERS);
+	if (p==NULL) {
+		fprintf(stdout,"Failed to malloc buffer pointers\n");
+		exit(1);
+	}
+	gpu_buffer_out=p;
 	
-	double * b = (double *)malloc(sizeof(double)*buffer_frames*NUM_BUFFERS*3);
+	double * b = (double *)malloc(sizeof(double)*buffer_frames*NUM_BUFFERS);
 	if (b==NULL) {
 		fprintf(stderr, "Failed to malloc buffers\n");
 		exit(1);
 	}
+	memset(b,0,sizeof(double)*buffer_frames*NUM_BUFFERS);
+
+	double * w = (double *)malloc(sizeof(double)*NUM_BUFFERS*WINDOWS*window_size);
+	if (w==NULL) {
+		fprintf(stderr, "Failed to malloc buffers\n");
+		exit(1);
+	}
+	memset(w,0,sizeof(double)*NUM_BUFFERS*WINDOWS*window_size);
+
+	double * wg = (double *)malloc(sizeof(double)*NUM_BUFFERS*WINDOWS*window_size);
+	if (wg==NULL) {
+		fprintf(stderr, "Failed to malloc buffers\n");
+		exit(1);
+	}
+	memset(wg,0,sizeof(double)*NUM_BUFFERS*WINDOWS*window_size);
+
 	int i;
 	for (i=0; i<NUM_BUFFERS; i++) {
 		buffer_in[i]=b+buffer_frames*i;	
-		cpu_buffer_out[i]=b+buffer_frames*(i+NUM_BUFFERS);
-		gpu_buffer_out[i]=b+buffer_frames*(i+2*NUM_BUFFERS);
+		int j;
+		for (j=0; j<WINDOWS; j++) {
+			cpu_buffer_out[i*WINDOWS+j]=(w+i*WINDOWS*window_size)+j*window_size;//  buffer_frames*(i+NUM_BUFFERS);
+			gpu_buffer_out[i*WINDOWS+j]=(wg+i*WINDOWS*window_size)+j*window_size;//   buffer_frames*(i+2*NUM_BUFFERS);
+		}
 	}
 
-	memset(b,0,sizeof(double)*buffer_frames*NUM_BUFFERS*3);
+
+	//allocate and populate hanning window
+	hanning_window=(double*)malloc(sizeof(double)*window_size);
+	for (i=0; i<window_size; i++) {
+		hanning_window[i]=hanning(i,window_size);
+	}
 
 	//allocate raw buffer in
 	signed short ** p2 = (signed short**)malloc(sizeof(signed short*)*NUM_BUFFERS);
@@ -257,6 +325,7 @@ int init_buffers() {
 	return 0;
 }
 
+#ifdef GPU
 void fft_gpu(double * b_in, double * b_out,  int N) {
 	struct GPU_FFT_COMPLEX *gpu_base = gpu_fft->in;
 	//copy in the data
@@ -288,6 +357,8 @@ double fft_gpu_compare(double * d1, double *d2,  int N) {
 	return x;
 }
 
+#endif
+
 void init_audio() {
   int err;
  
@@ -296,71 +367,71 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "audio interface opened\n");
+  fprintf(stdout, "audio interface opened\n");
 		   
   if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
     fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params allocated\n");
+  fprintf(stdout, "hw_params allocated\n");
 				 
   if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) {
     fprintf (stderr, "cannot initialize hardware parameter structure (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params initialized\n");
+  fprintf(stdout, "hw_params initialized\n");
 	
   if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
     fprintf (stderr, "cannot set access type (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params access setted\n");
+  fprintf(stdout, "hw_params access setted\n");
 	
   if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) {
     fprintf (stderr, "cannot set sample format (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params format setted\n");
+  fprintf(stdout, "hw_params format setted\n");
 	
   if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) {
     fprintf (stderr, "cannot set sample rate (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params rate setted\n");
+  fprintf(stdout, "hw_params rate setted\n");
  
   if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
     fprintf (stderr, "cannot set channel count (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params channels setted\n");
+  fprintf(stdout, "hw_params channels setted\n");
 	
   if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) {
     fprintf (stderr, "cannot set parameters (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "hw_params setted\n");
+  fprintf(stdout, "hw_params setted\n");
 	
   snd_pcm_hw_params_free (hw_params);
-  //fprintf(stdout, "hw_params freed\n");
+  fprintf(stdout, "hw_params freed\n");
 	
   if ((err = snd_pcm_prepare (capture_handle)) < 0) {
     fprintf (stderr, "cannot prepare audio interface for use (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  //fprintf(stdout, "audio interface prepared\n");
+  fprintf(stdout, "audio interface prepared\n");
 }
 
 
 void init_fftw3() {
-  p = fftw_plan_r2r_1d(buffer_frames, buffer_in[0], cpu_buffer_out[0] , FFTW_R2HC, FFTW_ESTIMATE);
+  p = fftw_plan_r2r_1d(window_size, buffer_in[0], cpu_buffer_out[0] , FFTW_R2HC, FFTW_ESTIMATE);
 }
 
 
@@ -387,6 +458,7 @@ void * read_audio(void * n) {
 		      exit (1);
 		    }
 		    sem_post(&s_ready);
+		    fprintf(stderr,"READ %u\n",microseconds());
 		    if (exit_now==1) {	
 			sem_post(&s_exit);
 			return NULL;
@@ -411,7 +483,9 @@ void * process_audio(void * n) {
 		//move from raw in to input
 		int i;
 		for (i=0; i<NUM_BUFFERS/2; i++) {
+			fprintf(stderr,"PROCESS WAIT %u\n",microseconds());
 			sem_wait(&s_ready);
+			fprintf(stderr,"PROCESS %u\n",microseconds());
 			if (exit_now==1) {
 				sem_post(&s_done);
 				sem_post(&s_exit);
@@ -460,11 +534,44 @@ void * process_audio(void * n) {
 #ifdef CPU
 	    	//fprintf(stdout,"process_audio running cpu fft\n");
 		t[2]=microseconds();
+		double * tmp = (double*)malloc(sizeof(double)*window_size);
+		memset(tmp, 0, sizeof(double)*window_size);
+		//for each raw_read of buffer input lets compute the ffts in the sliding window!
 		for (i=0; i<NUM_BUFFERS/2; i++) {
-			fftw_execute_r2r(p,buffer_in[i+half*NUM_BUFFERS/2],cpu_buffer_out[i+half*NUM_BUFFERS/2]);
-			cpu_buffer_out[i][buffer_frames/2]=0;
+			int j;
+			for (j=0; j<WINDOWS; j++) {
+							     //which buffer                    //which window
+				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j;
+				memcpy(tmp, buffer_in[i+half*NUM_BUFFERS/2]+j*window_shift, sizeof(double)*window_size);
+				int k;
+				//apply hanning before FFT
+				for (k=0; k<window_size; k++) {
+					tmp[k]*=hanning_window[k];
+				}
+
+				//FFT
+				//fftw_execute_r2r(p,buffer_in[i+half*NUM_BUFFERS/2]+j*window_shift,cpu_buffer_out[cpu_buffer_index]);
+				fftw_execute_r2r(p,tmp,cpu_buffer_out[cpu_buffer_index]);
+
+				//CPU and GPU differ on this value...
+				cpu_buffer_out[cpu_buffer_index][window_size/2]=0; //fix sync issue between CPU and GPU
+
+				//abs and foldback
+				//for (k=0; k<window_size/2; k++) {
+				//	//fprintf(stderr,"%0.3e %0.3e %0.3e\n",tmp[k],tmp[k+window_size/2],tmp[window_size-1-k]);
+				//	tmp[k]=abs(tmp[k])+abs(tmp[window_size-1-k]);
+				//}
+
+			}
+			//process the data
+			for (j=0; j<WINDOWS/4; j++) {
+				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j*4;
+				fprintf(stderr,"STDDEV: %0.3f %d\n",stddev(cpu_buffer_out[cpu_buffer_index],window_size*4),j);	
+			}
 		}	
+
 		t[3]=microseconds();
+		fprintf(stdout, "CPU %u\n",t[3]-t[2]);
 #endif
 		//uncomment to run CPU also
 
@@ -500,7 +607,7 @@ void * process_audio(void * n) {
 			exit(1);
 #endif
 
-		//prepare input
+/*		//prepare input
 #ifdef GPU
 		prepare_input(gpu_buffer_out+half*NUM_BUFFERS/2,10,buffer_frames);
 #endif
@@ -524,7 +631,7 @@ void * process_audio(void * n) {
 				printf("BARK detected at %s\n", ctime(&result));
 			}
 		}
-		
+*/		
 		sem_post(&s_done);
 		if (exit_now==1) {
 			sem_post(&s_exit);
@@ -691,7 +798,7 @@ void read_device_id() {
 	char buffer[2048];
 	size_t r = fread(buffer, 1, 2048, fptr);
 	buffer[r-1]='\0';
-	int i=0;
+	int i=1;
 	while (!isalnum(buffer[r-i])) {
 		buffer[r-i]='\0';
 		i++;
@@ -721,22 +828,31 @@ int main (int argc, char *argv[]) {
 
   read_device_id();
 
+#ifdef GPU
   unlink(DEVICE_FILE_NAME); //dont really care about return value, just check mknod
 
   //dev_t d = makedev(major(100),minor(0));
+  fprintf(stderr,"MAKE DEV\n");
   dev_t d = makedev(100,0);
   int r = mknod(DEVICE_FILE_NAME, S_IFCHR | S_IROTH | S_IRGRP | S_IRUSR | S_IWUSR, d);
   if (r<0) {
 	fprintf(stderr,"Something went wrong with making file\n");
 	exit(1);
   }
-
+  fprintf(stderr,"MAKE DEV DONE\n");
+#endif 
+fprintf(stderr,"READMODEL\n");
   read_model(model_fn);
+fprintf(stderr,"READMODEL\n");
   //fprintf(stdout,"starting inits\n");
   curl_global_init(CURL_GLOBAL_ALL);
+fprintf(stderr,"READMODELz \n");
   init_barks();
+fprintf(stderr,"READMODEL y \n");
   init_audio();
+fprintf(stderr,"READMODEL x\n");
   init_buffers();
+fprintf(stderr,"READMODEL 2\n");
 #ifdef GPU
   init_gpu();
 #endif
