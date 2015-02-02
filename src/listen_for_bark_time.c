@@ -49,7 +49,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define CAMERA_USB_MIC_DEVICE "plughw:1,0"
 
-#define BARK_THRESHOLD 2.5
+#define BARK_THRESHOLD 2.75
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -84,17 +84,18 @@ snd_pcm_hw_params_t *hw_params;
 snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 fftw_plan p;
 
-#define NUM_BARKS  8
-#define BARK_BANK_SIZE	64 //256
+#define NUM_BARKS  4
+#define BARK_BANK_SIZE	8 //256
 unsigned int rate = 8000; //44100; //22050; //44100;
 const int window_size= 256;
 const int window_shift = 110;
 #define NON_OVERLAP (window_size-window_shift)
 #define WINDOWS (1+(buffer_frames-window_size)/window_shift)
+#define WINDOW_AVG 4
 
 int barks_total;
 double * barks;
-
+double median=0.0;
 double * hanning_window;
 
 double * bark_bank;
@@ -106,7 +107,6 @@ double barks_sum;
 
 int exit_now=0;
 
-double mean=0.0;
 int uploads=0;
 
 
@@ -458,7 +458,7 @@ void * read_audio(void * n) {
 		      exit (1);
 		    }
 		    sem_post(&s_ready);
-		    fprintf(stderr,"READ %u\n",microseconds());
+		    //fprintf(stderr,"READ %u\n",microseconds());
 		    if (exit_now==1) {	
 			sem_post(&s_exit);
 			return NULL;
@@ -483,9 +483,9 @@ void * process_audio(void * n) {
 		//move from raw in to input
 		int i;
 		for (i=0; i<NUM_BUFFERS/2; i++) {
-			fprintf(stderr,"PROCESS WAIT %u\n",microseconds());
+			//fprintf(stderr,"PROCESS WAIT %u\n",microseconds());
 			sem_wait(&s_ready);
-			fprintf(stderr,"PROCESS %u\n",microseconds());
+			//fprintf(stderr,"PROCESS %u\n",microseconds());
 			if (exit_now==1) {
 				sem_post(&s_done);
 				sem_post(&s_exit);
@@ -555,6 +555,10 @@ void * process_audio(void * n) {
 
 				//CPU and GPU differ on this value...
 				cpu_buffer_out[cpu_buffer_index][window_size/2]=0; //fix sync issue between CPU and GPU
+				//blank some out
+				cpu_buffer_out[cpu_buffer_index][0]=0; //fix sync issue between CPU and GPU
+				cpu_buffer_out[cpu_buffer_index][1]=0; //fix sync issue between CPU and GPU
+				cpu_buffer_out[cpu_buffer_index][2]=0; //fix sync issue between CPU and GPU
 
 				//abs and foldback
 				//for (k=0; k<window_size/2; k++) {
@@ -562,16 +566,68 @@ void * process_audio(void * n) {
 				//	tmp[k]=abs(tmp[k])+abs(tmp[window_size-1-k]);
 				//}
 
+				//print window
+				//for (k=0; k<window_size; k++) {
+				//	fprintf(stderr,"%0.1f%c" , cpu_buffer_out[cpu_buffer_index][k], k==window_size-1 ? '\n' : ',');
+				//}
+				//exit(1);
+
 			}
 			//process the data
-			for (j=0; j<WINDOWS/4; j++) {
-				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j*4;
-				fprintf(stderr,"STDDEV: %0.3f %d\n",stddev(cpu_buffer_out[cpu_buffer_index],window_size*4),j);	
+			for (j=0; j<WINDOWS/WINDOW_AVG; j++) {
+				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j*WINDOW_AVG;
+				//fprintf(stderr,"STDDEV: %0.3f %d\n",stddev(cpu_buffer_out[cpu_buffer_index],window_size*WINDOW_AVG),j);
+				int k;
+				//compute the mean over WINDOW_AVG windows
+				for (k=0; k<WINDOW_AVG; k++) {
+					int h;
+					for (h=0; h<window_size; h++) {
+						tmp[h]=1.0/WINDOW_AVG * ( (k==0) ? cpu_buffer_out[cpu_buffer_index][h] : (tmp[h]+cpu_buffer_out[cpu_buffer_index+k][h])); 
+					}
+				}
+				//subtract out the MEAN from these windows
+				for (k=0; k<window_size; k++) {
+					int h;
+					for (h=0; h<WINDOW_AVG; h++) {
+						cpu_buffer_out[cpu_buffer_index+h][k]-=tmp[k];
+					}
+				}
+			}
+			//for each window lets compute abs and foldback
+			for (j=0; j<WINDOWS; j++) {
+				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j;
+				int k;
+				//abs and foldback
+				for (k=0; k<window_size/2; k++) {
+					//fprintf(stderr,"%0.3e %0.3e %0.3e\n",tmp[k],tmp[k+window_size/2],tmp[window_size-1-k]);
+					cpu_buffer_out[cpu_buffer_index][k]=log(abs(cpu_buffer_out[cpu_buffer_index][k])+abs(cpu_buffer_out[cpu_buffer_index][window_size-1-k])+1);
+					cpu_buffer_out[cpu_buffer_index][window_size-1-k]=0; //clear the second half
+				}
+				//drop the second half
+				//for (k=0; k<window_size/4; k++) {
+				//	cpu_buffer_out[cpu_buffer_index][window_size/2-k]=0;
+				//}
+				//print window
+				//for (k=0; k<window_size; k++) {
+				//	fprintf(stderr,"%0.1f%c" , cpu_buffer_out[cpu_buffer_index][k], k==window_size-1 ? '\n' : ',');
+				//}
+			}
+			for (j=0; j<(WINDOWS-WINDOW_AVG); j++) {
+				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j;
+				const double d = 1-logit(cpu_buffer_out[cpu_buffer_index]);
+				//add_bark(d);
+				add_bark(d);
+				//fprintf(stdout,"%f\n",d);
+				if (barks_total>NUM_BARKS && sum_barks()>BARK_THRESHOLD) {
+					time_t result = time(NULL);
+					printf("BARK detected at %s %f\n", ctime(&result), d);
+				}
+				add_bark_sum(sum_barks());
 			}
 		}	
 
 		t[3]=microseconds();
-		fprintf(stdout, "CPU %u\n",t[3]-t[2]);
+		//fprintf(stdout, "CPU %u\n",t[3]-t[2]);
 #endif
 		//uncomment to run CPU also
 
@@ -686,8 +742,9 @@ void update_mean(int bank, double scale) {
 
 	//lets get the median instead...
 	qsort(bark_bank+BARK_BANK_SIZE*sending_bark_bank, BARK_BANK_SIZE, sizeof(double), cmp);
-	double median=bark_bank[BARK_BANK_SIZE*sending_bark_bank+BARK_BANK_SIZE/2];
-	mean=median*scale+(1-scale)*median;
+	double median2=bark_bank[BARK_BANK_SIZE*sending_bark_bank+BARK_BANK_SIZE/32];
+	median=median*scale+(1-scale)*median2;
+	median=0;
 	//fprintf(stderr,"MEAN IS %lf\n",mean);	
 	//getting the mean
 	/*
@@ -725,12 +782,14 @@ char * to_json() {
 	int i;
 	for (i=0; i<BARK_BANK_SIZE; i++) {
 		//double v = MAX(mean-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i],0);
-		double v = mean-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
+		//double v = mean-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
+		double v = median-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
 		s+=v;
 	}
+	s=abs(s);
 	int x=0;
 	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.1f }" , time_barks[sending_bark_bank], time(NULL),s);
-	fprintf(stderr,"JSON : %s, %e\n",json_buffer,s);
+	//fprintf(stderr,"JSON : %s, %e, %e\n",json_buffer,s,median);
 	return json_buffer;
 }	
 
@@ -742,7 +801,7 @@ void * upload_barks(void * n ) {
 			return NULL;
 		}
 	  
-		if (uploads==0) {
+		if (uploads<2) {
 	  		update_mean(sending_bark_bank,0); //set the mean
 		} else {
 	  		update_mean(sending_bark_bank,0.9); //set the mean
