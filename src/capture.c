@@ -17,11 +17,74 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //#include <rfftw.h> 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <stdint.h>
 #include <alsa/asoundlib.h>
+
+#define WINDOW_SIZE 256
 
 
 #define CAMERA_USB_MIC_DEVICE "plughw:1,0"
-	      
+
+
+struct WaveHeader {
+        char RIFF_marker[4];
+        uint32_t file_size;
+        char filetype_header[4];
+        char format_marker[4];
+        uint32_t data_header_length;
+        uint16_t format_type;
+        uint16_t number_of_channels;
+        uint32_t sample_rate;
+        uint32_t bytes_per_second;
+        uint16_t bytes_per_frame;
+        uint16_t bits_per_sample;
+};
+
+struct WaveHeader *genericWAVHeader(uint32_t sample_rate, uint16_t bit_depth, uint16_t channels){
+    struct WaveHeader *hdr;
+    hdr = (struct WaveHeader*) malloc(sizeof(*hdr));
+    if (!hdr)
+        return NULL;
+
+    memcpy(&hdr->RIFF_marker, "RIFF", 4);
+    memcpy(&hdr->filetype_header, "WAVE", 4);
+    memcpy(&hdr->format_marker, "fmt ", 4);
+    hdr->data_header_length = 16;
+    hdr->format_type = 1;
+    hdr->number_of_channels = channels;
+    hdr->sample_rate = sample_rate;
+    hdr->bytes_per_second = sample_rate * channels * bit_depth / 8;
+    hdr->bytes_per_frame = channels * bit_depth / 8;
+    hdr->bits_per_sample = bit_depth;
+
+    return hdr;
+}
+
+int writeWAVHeader(int fd, struct WaveHeader *hdr){
+    if (!hdr)
+        return -1;
+
+    write(fd, &hdr->RIFF_marker, 4);
+    write(fd, &hdr->file_size, 4);
+    write(fd, &hdr->filetype_header, 4);
+    write(fd, &hdr->format_marker, 4);
+    write(fd, &hdr->data_header_length, 4);
+    write(fd, &hdr->format_type, 2);
+    write(fd, &hdr->number_of_channels, 2);
+    write(fd, &hdr->sample_rate, 4);
+    write(fd, &hdr->bytes_per_second, 4);
+    write(fd, &hdr->bytes_per_frame, 2);
+    write(fd, &hdr->bits_per_sample, 2);
+    write(fd, "data", 4);
+
+    uint32_t data_size = hdr->file_size + 8 - 44;
+    write(fd, &data_size, 4);
+
+    return 0;
+}	      
+
+
 
 void ShortToReal(signed short* shrt,double* real,int siz) {
 	int i;
@@ -33,7 +96,7 @@ void ShortToReal(signed short* shrt,double* real,int siz) {
 
 
 signed short *buffer;
-int buffer_frames = 2048;
+int buffer_frames = 2048*4*16;
 unsigned int rate = 8000;
 double *buffer_out, *buffer_in, *power_spectrum;
 snd_pcm_t *capture_handle;
@@ -122,14 +185,57 @@ void init_audio() {
 }
 
 int main (int argc, char *argv[]) {
+	
+  if (argc!=2 ) {
+	fprintf(stderr,"%s filename\n",argv[0]);
+	exit(1);
+  }
   assert(buffer_frames%2==0);
+
+
+ char * fn = argv[1];
+  struct WaveHeader *hdr;
+  hdr = genericWAVHeader(8000, 16, 2);
+
+
+  init_audio();
+  buffer = malloc(buffer_frames * snd_pcm_format_width(format) / 8 * 2);
+  buffer_in = malloc(buffer_frames * sizeof(double));
+
+  int err;
+    if ((err = snd_pcm_readi (capture_handle, buffer, buffer_frames)) != buffer_frames) {
+      fprintf (stderr, "read from audio interface failed (%s)\n",
+               snd_strerror (err));
+      exit (1);
+    }
+    //convert to frequency domain
+
+    //cast over to double
+    ShortToReal(buffer,buffer_in,buffer_frames);
+
+
+  fprintf(stderr,"captured %d points\n",err);
+  uint32_t pcm_data_size = hdr->bytes_per_frame * err;
+  hdr->file_size = pcm_data_size + 44 - 8;
+
+ //now write the file
+  int filedesc = open(fn, O_WRONLY | O_CREAT, 0644);
+  err = writeWAVHeader(filedesc, hdr);
+    if (err) {
+		fprintf(stderr,"Failed to write header\n");
+		exit(1);
+    }
+
+  write(filedesc, buffer, pcm_data_size);
+  exit(1);
+
+  
   int i;
  
 
-  init_audio();
 
-  buffer = malloc(buffer_frames * snd_pcm_format_width(format) / 8 * 2);
-  buffer_in = malloc(buffer_frames * sizeof(double));
+
+
   buffer_out = malloc(buffer_frames * sizeof(double));
   power_spectrum = malloc(buffer_frames * sizeof(double));
 
@@ -153,13 +259,30 @@ int main (int argc, char *argv[]) {
  	fprintf(stderr, "Failed to alloc freq array\n");
 	exit(1);
   }
-  for (i = 0; i < buffer_frames; i++) {
-	freq[i]=(((double)i)/buffer_frames)*rate;
-	fprintf(stdout, "%f%c" , freq[i], (i==buffer_frames-1) ?  '\n' : ',');
-  }
+  //for (i = 0; i < buffer_frames; i++) {
+  //	freq[i]=(((double)i)/buffer_frames)*rate;
+  //	fprintf(stdout, "%f%c" , freq[i], (i==buffer_frames-1) ?  '\n' : ',');
+  //}
 
   
-  int err;
+  //int err;
+  if ((err = snd_pcm_readi (capture_handle, buffer, buffer_frames)) != buffer_frames) {
+     fprintf (stderr, "read from audio interface failed (%s)\n",
+               snd_strerror (err));
+     exit (1);
+   }
+    //convert to frequency domain
+
+    //cast over to double
+    ShortToReal(buffer,buffer_in,buffer_frames);
+    //print the transformed data
+   int j;
+    for (j=0; j<buffer_frames; j++) {
+	fprintf(stdout, "%f%c" ,buffer_in[j],(j==buffer_frames-1) ? '\n' : ',');
+    }
+    exit(1);
+	
+  //get a bunch more
   for (i = 0; i < 800; ++i) {
     if (i%100==0) {
 	fprintf(stderr,"%d\n",i);

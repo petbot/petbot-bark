@@ -471,6 +471,80 @@ void * read_audio(void * n) {
 }
 
 
+void process_window(double * d) {
+	
+	int k;
+	double pws[WINDOW_AVG];
+	memset(pws,0, sizeof(double)*WINDOW_AVG);
+	for (k=2; k<10; k++) {
+		int kk;
+		for (kk=0; kk<WINDOW_AVG; kk++) {
+			pws[kk]+=d[kk*window_size+k];
+		}
+	}
+	double stddev_current = stddev(pws,WINDOW_AVG);
+	int increasing=1;
+	for (k=0; k<WINDOW_AVG-1; k++) {
+		if (pws[k]>pws[k+1]) {
+			increasing=0;
+		}
+		//fprintf(stderr, "%f," , pws[k]);
+	}
+	//fprintf(stderr, "%f\n" , pws[WINDOW_AVG-1]);
+	
+
+	int usable = 0;	
+	if (stddev_current>100 && increasing==1) {
+		usable=1;
+	}	
+	if (usable!=1) {
+		return;
+	}
+	//fprintf(stderr,"STDDEV: %0.3f\n",stddev(d,window_size*WINDOW_AVG));
+
+	double * tmp = (double*)malloc(sizeof(double)*window_size);
+	memset(tmp, 0, sizeof(double)*window_size);
+	double * tmp_v = (double*)malloc(sizeof(double)*window_size*WINDOW_AVG);
+	memset(tmp_v, 0, sizeof(double)*window_size*WINDOW_AVG);
+	//compute the mean over WINDOW_AVG windows/
+	for (k=0; k<WINDOW_AVG; k++) {
+		int h;
+		for (h=0; h<window_size; h++) {
+			tmp[h]=1.0/WINDOW_AVG * ( (k==0) ? d[h] : (tmp[h]+d[k*window_size+h])); 
+		}
+	}
+	//subtract out the MEAN from these windows
+	for (k=0; k<WINDOW_AVG; k++) {
+		int h;
+		for (h=0; h<window_size; h++) {
+			tmp_v[k*window_size+h]=d[k*window_size+h]-tmp[h];
+		}
+	}
+
+	//abs, log , and foldback
+	for (k=0; k<WINDOW_AVG; k++) {
+		int h;
+		for (h=0; h<window_size/2; h++) {
+			tmp_v[k]=log(abs(tmp_v[k*window_size+h])+abs(tmp_v[k*window_size + window_size-1-h])+1);
+			tmp_v[k*window_size + window_size-1-h]=0; //clear the second half
+		}
+	}
+
+	const double pr = 1-logit(tmp_v);
+	//add_bark(d);
+	add_bark(pr);
+	//fprintf(stdout,"%f\n",d);
+	time_t result = time(NULL);
+	if (barks_total>NUM_BARKS && sum_barks()>BARK_THRESHOLD/8) {
+		//printf("BARK detected at %f %f %s", pr, sum_barks(),  ctime(&result));
+	}
+	printf("at %f %f %s", pr, sum_barks(),  ctime(&result));
+	add_bark_sum(sum_barks());
+	free(tmp);
+	free(tmp_v);
+
+}
+
 void * process_audio(void * n) {
 	double * means = (double * )malloc(sizeof(double)*buffer_frames);
 	if (means==NULL) {
@@ -535,11 +609,11 @@ void * process_audio(void * n) {
 	    	//fprintf(stdout,"process_audio running cpu fft\n");
 		t[2]=microseconds();
 		double * tmp = (double*)malloc(sizeof(double)*window_size);
-		memset(tmp, 0, sizeof(double)*window_size);
-		double * tmp_usable = (int*)malloc(sizeof(int)*WINDOWS);
-		memset(tmp_usable, 0, sizeof(int)*WINDOWS);
+		int * tmp_usable = (int*)malloc(sizeof(int)*WINDOWS);
 		//for each raw_read of buffer input lets compute the ffts in the sliding window!
 		for (i=0; i<NUM_BUFFERS/2; i++) {
+			memset(tmp, 0, sizeof(double)*window_size);
+			memset(tmp_usable, 0, sizeof(int)*WINDOWS);
 			int j;
 			for (j=0; j<WINDOWS; j++) {
 							     //which buffer                    //which window
@@ -577,70 +651,14 @@ void * process_audio(void * n) {
 			}
 			//process the data
 			
-			for (j=0; j<WINDOWS/WINDOW_AVG; j++) {
-				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j*WINDOW_AVG;
-				double stddev_current = stddev(cpu_buffer_out[cpu_buffer_index],window_size*WINDOW_AVG);
-				 
-				//fprintf(stderr,"STDDEV: %0.3f %d\n",stddev(cpu_buffer_out[cpu_buffer_index],window_size*WINDOW_AVG),j);
-				int k;
-				//compute the mean over WINDOW_AVG windows
-				for (k=0; k<WINDOW_AVG; k++) {
-					int h;
-					for (h=0; h<window_size; h++) {
-						tmp[h]=1.0/WINDOW_AVG * ( (k==0) ? cpu_buffer_out[cpu_buffer_index][h] : (tmp[h]+cpu_buffer_out[cpu_buffer_index+k][h])); 
-					}
-					if (stddev_current>1500) {
-						tmp_usable[j*WINDOW_AVG+k]=1;
-					}	
-				}
-				//subtract out the MEAN from these windows
-				for (k=0; k<window_size; k++) {
-					int h;
-					for (h=0; h<WINDOW_AVG; h++) {
-						cpu_buffer_out[cpu_buffer_index+h][k]-=tmp[k];
-					}
-				}
-			}
 			//for each window lets compute abs and foldback
-			for (j=0; j<WINDOWS; j++) {
+			for (j=0; j<WINDOWS-WINDOW_AVG; j++) {
 				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j;
-				int k;
-				//abs and foldback
-				for (k=0; k<window_size/2; k++) {
-					//fprintf(stderr,"%0.3e %0.3e %0.3e\n",tmp[k],tmp[k+window_size/2],tmp[window_size-1-k]);
-					cpu_buffer_out[cpu_buffer_index][k]=log(abs(cpu_buffer_out[cpu_buffer_index][k])+abs(cpu_buffer_out[cpu_buffer_index][window_size-1-k])+1);
-					cpu_buffer_out[cpu_buffer_index][window_size-1-k]=0; //clear the second half
-				}
-				//drop the second half
-				//for (k=0; k<window_size/4; k++) {
-				//	cpu_buffer_out[cpu_buffer_index][window_size/2-k]=0;
-				//}
-				//print window
-				//for (k=0; k<window_size; k++) {
-				//	fprintf(stderr,"%0.1f%c" , cpu_buffer_out[cpu_buffer_index][k], k==window_size-1 ? '\n' : ',');
-				//}
+				process_window(cpu_buffer_out[cpu_buffer_index]);
 			}
-			int skip=0;
-			for (j=0; j<(WINDOWS-WINDOW_AVG); j++) {
-				if (tmp_usable[j]!=1) {
-					skip++;
-					continue;
-				}
-				const int cpu_buffer_index = (i+half*NUM_BUFFERS/2)* WINDOWS + j;
-				const double d = 1-logit(cpu_buffer_out[cpu_buffer_index]);
-				//add_bark(d);
-				add_bark(d);
-				//fprintf(stdout,"%f\n",d);
-				time_t result = time(NULL);
-				if (barks_total>NUM_BARKS && sum_barks()>BARK_THRESHOLD/8) {
-					printf("BARK detected at %f %f %s", d, sum_barks(),  ctime(&result));
-				}
-				//printf("at %f %f %s", d, sum_barks(),  ctime(&result));
-				add_bark_sum(sum_barks());
-			}
-			fprintf(stderr,"SKIPPED %d of %d\n", skip, WINDOWS-WINDOW_AVG);
 		}	
-
+		free(tmp);
+		free(tmp_usable);
 		t[3]=microseconds();
 		//fprintf(stdout, "CPU %u\n",t[3]-t[2]);
 #endif
