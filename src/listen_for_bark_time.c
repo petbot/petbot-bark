@@ -456,7 +456,8 @@ void init_audio() {
   }
   fprintf(stdout, "hw_params rate setted\n");
  
-  if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
+  //if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
+  if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 1)) < 0) {
     fprintf (stderr, "cannot set channel count (%s)\n",
              snd_strerror (err));
     exit (1);
@@ -630,6 +631,17 @@ void * process_audio(void * n) {
 			//COPY TO CPU
 			short_to_double(buffer_in[i+half*NUM_BUFFERS/2],raw_buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
 #endif			
+				/*	//process this "bark"i
+					char bf[128];
+					sprintf(bf,"out%d\n",1111);
+					FILE * fptr = fopen(bf,"wb");
+					if (fptr==NULL) {
+						fprintf(stderr,"FAILED TO OPEN FIL ETO\n");
+						exit(1);
+					}
+					fwrite(buffer_in[i+half*NUM_BUFFERS/2],1,sizeof(double)*buffer_frames,fptr);
+					fclose(fptr);
+					exit(1);*/
 
 			//normalize the signal
 			//lets find the mean
@@ -699,21 +711,21 @@ void * process_audio(void * n) {
 			
 
 			//compute the thresholds for each window
-			double s=0.0; double mx=0.0;
+			int s=0.0; double mx=0.0;
 			for (j=0; j<buffer_frames; j++) {
 				if (abs(buffer_in[i+half*NUM_BUFFERS/2][j])>threshold) {
 					s+=1;
 				}
 				if (j>=peak_window_size) {
 					if (abs(buffer_in[i+half*NUM_BUFFERS/2][j-peak_window_size])>threshold) {
-						s-=1.0;
+						s-=1;
 					}
-					candidate_barks[j]=s/peak_window_size;
+					candidate_barks[j]=((double)s)/peak_window_size;
 					if (candidate_barks[j]>mx) {
 						mx=candidate_barks[j];
 					}
-					candidate_barks_p[j]=candidate_barks+j;
 				}
+				candidate_barks_p[j]=candidate_barks+j;
 			}
 
 			//sort them and fill windows
@@ -726,7 +738,8 @@ void * process_audio(void * n) {
 				exit(1);
 			}
 			//fprintf(stderr,"mx %lf, f %lf, b %lf\n",mx, *candidate_barks_p[0], *candidate_barks_p[buffer_frames-1]);
-			for (j=buffer_frames-1; j>peak_window_size; j--) {
+			int yy=0;
+			for (j=buffer_frames-1; j>0; j--) {
 				size_t index = candidate_barks_p[j]-candidate_barks;	
 				assert(*candidate_barks_p[j]==candidate_barks[index] || candidate_barks[index]<0);
 				if (index>=peak_window_size) {
@@ -735,7 +748,19 @@ void * process_audio(void * n) {
 						continue;
 					}
 					fprintf(stderr,"PROCESSING CANDIDATE BARK %lf\n",candidate_barks[index]);
-					//process this "bark"
+					//process this "bark"i
+					/*char bf[128];
+					sprintf(bf,"out%d\n",yy++);
+					FILE * fptr = fopen(bf,"wb");
+					if (fptr==NULL) {
+						fprintf(stderr,"FAILED TO OPEN FIL ETO\n");
+						exit(1);
+					}
+					fwrite(buffer_in[i+half*NUM_BUFFERS/2]+(index-peak_window_size),1,sizeof(double)*2000,fptr);
+					fclose(fptr);
+					if (yy==10) {
+					exit(1);
+					}*/
 					int k;
 					for (k=0; k<WINDOWS; k++ ){
 						//copy and apply hamming
@@ -743,6 +768,7 @@ void * process_audio(void * n) {
 						int h;
 						//apply hanning before FFT
 						for (h=0; h<window_size; h++) {
+							window_buffer[h]=MAX(5.96e-8,MIN(65504,window_buffer[h]));
 							window_buffer[h]*=hanning_window[h];
 							//fprintf(stderr,"%e\n",hanning_window[h]);
 						}
