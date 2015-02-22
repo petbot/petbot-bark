@@ -73,7 +73,7 @@ void short_to_double(double * real , signed short* shrt, int size) {
 	}
 }
 
-int buffer_frames = 2048*8;
+int buffer_frames = 2048*32;
 //int buffer_frames = 2048*16;
 
 #define NUM_BUFFERS 4
@@ -88,9 +88,11 @@ fftw_plan p;
 #define BARK_BANK_SIZE	8 //256
 unsigned int rate = 8000; //44100; //22050; //44100;
 const int window_size= 256;
-const int window_shift = 110;
+const int window_shift = 109;
+int sample_frames = 2000; //0.25*fs
 #define NON_OVERLAP (window_size-window_shift)
-#define WINDOWS (1+(buffer_frames-window_size)/window_shift)
+//#define WINDOWS (1+(sample_frames-window_size)/window_shift)
+#define WINDOWS ((sample_frames-window_size)/window_shift)
 #define WINDOW_AVG 4
 
 int barks_total;
@@ -110,9 +112,13 @@ int exit_now=0;
 int uploads=0;
 
 
+float * filters=NULL;
+float * biases=NULL;
+
 double
 hanning (int i, int nn) {
-  return ( 0.5 * (1.0 - cos (2.0*M_PI*(double)i/(double)(nn-1))) );
+  return 0.54-0.46*cos(2*M_PI*(double)i/(double)(nn-1));
+  //return ( 0.5 * (1.0 - cos (2.0*M_PI*(double)i/(double)(nn-1))) );
 }
 
 double stddev(double * d, int n) {
@@ -127,6 +133,52 @@ double stddev(double * d, int n) {
     return sqrt(sum_deviation/n);           
 }
 
+
+int cmp(const void *x, const void *y) {
+  double xx = *(double*)x, yy = *(double*)y;
+  if (xx < yy) return -1;
+  if (xx > yy) return  1;
+  return 0;
+}
+
+int cmp_p(const void *x, const void *y) {
+  //fprintf(stderr,"%p %p\n",x,y);
+  //fprintf(stderr,"\t%p %p\n",*((double **)x),*((double **)y));
+  double xx = **((double**)x), yy = **((double**)y);
+  if (xx < yy) return -1;
+  if (xx > yy) return  1;
+  return 0;
+}
+
+
+float * read_floats(char * fn ) {
+	FILE * fptr = fopen(fn,"rb");
+	if (fptr==NULL) {
+		fprintf(stderr,"Failed to open file %s\n",fn);
+		exit(1);
+	}
+	fseek(fptr, 0, SEEK_END);
+	long size = ftell(fptr);
+	fseek(fptr, 0, SEEK_SET);
+
+	float *f = (float *)malloc(sizeof(float)*size);
+	if(f==NULL) {
+		fprintf(stderr,"FAILED TO MALLOC FOR BIN FILE!\n");
+		exit(1);
+	}
+
+
+	size/=sizeof(float);
+	//assert(size==(2048*4) || size==4);//hard coded filter sizese
+	if(fread(f, sizeof(float), size, fptr)!=size) {
+		fprintf(stderr,"FAILED TO READ BIN FILE!\n");
+		exit(1);
+	}
+
+	fclose(fptr);
+
+	return f;
+}
 
 unsigned microseconds(void) {
     struct timespec ts;
@@ -471,6 +523,8 @@ void * read_audio(void * n) {
 }
 
 
+
+
 void process_window(double * d) {
 	
 	int k;
@@ -546,11 +600,6 @@ void process_window(double * d) {
 }
 
 void * process_audio(void * n) {
-	double * means = (double * )malloc(sizeof(double)*buffer_frames);
-	if (means==NULL) {
-		fprintf(stdout, "failed to allocate buffer for means\n");
-		exit(1);
-	}
 	//fprintf(stdout,"starting process_audio\n");
 	int half=0;
 	while (1) {
@@ -581,6 +630,29 @@ void * process_audio(void * n) {
 			//COPY TO CPU
 			short_to_double(buffer_in[i+half*NUM_BUFFERS/2],raw_buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
 #endif			
+
+			//normalize the signal
+			//lets find the mean
+			double s =0;
+			int j;
+			for (j=0; j<buffer_frames; j++) {
+				s+=buffer_in[i+half*NUM_BUFFERS/2][j];
+			}
+			double mean = s/buffer_frames;
+			double std = stddev(buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
+			for (j=0; j<buffer_frames; j++) {
+				buffer_in[i+half*NUM_BUFFERS/2][j]=1000*(buffer_in[i+half*NUM_BUFFERS/2][j]-mean)/std;
+			}
+			fprintf(stderr,"%lf %lf\n",mean,std);
+			std = stddev(buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
+			s=0;
+			for (j=0; j<buffer_frames; j++) {
+				s+=buffer_in[i+half*NUM_BUFFERS/2][j];
+			}
+			mean = s/buffer_frames;
+			fprintf(stderr,"%lf %lf\n",mean,std);
+
+	
 		}
 
 		unsigned t[4];
@@ -606,6 +678,160 @@ void * process_audio(void * n) {
 #endif
 
 #ifdef CPU
+
+		for (i=0; i<NUM_BUFFERS/2; i++) {
+			//lets do some peak finding
+			double * candidate_barks = (double*)malloc(sizeof(double)*buffer_frames);
+			memset(candidate_barks, 0, sizeof(double)*buffer_frames);
+
+			double ** candidate_barks_p = (double**)malloc(sizeof(double*)*buffer_frames);
+			memset(candidate_barks_p, 0, sizeof(double*)*buffer_frames);
+
+
+			int peak_window_size = rate*0.25; //0.25ms - 2k at 8khz
+			assert(peak_window_size==2000);
+			double threshold_sum=0.0;
+			int j;
+			for (j=0; j<buffer_frames; j++) {
+				threshold_sum+=abs(buffer_in[i+half*NUM_BUFFERS/2][j]);
+			}
+			double threshold=threshold_sum/buffer_frames; // mean(abs(z))
+			
+
+			//compute the thresholds for each window
+			double s=0.0; double mx=0.0;
+			for (j=0; j<buffer_frames; j++) {
+				if (abs(buffer_in[i+half*NUM_BUFFERS/2][j])>threshold) {
+					s+=1;
+				}
+				if (j>=peak_window_size) {
+					if (abs(buffer_in[i+half*NUM_BUFFERS/2][j-peak_window_size])>threshold) {
+						s-=1.0;
+					}
+					candidate_barks[j]=s/peak_window_size;
+					if (candidate_barks[j]>mx) {
+						mx=candidate_barks[j];
+					}
+					candidate_barks_p[j]=candidate_barks+j;
+				}
+			}
+
+			//sort them and fill windows
+			qsort(candidate_barks_p, buffer_frames, sizeof(double*), cmp_p);
+			//fill the windows
+			double * windows_buffer = (double*)malloc(sizeof(double)*WINDOWS*window_size);
+			double * window_buffer = (double*)malloc(sizeof(double)*window_size);
+			if (windows_buffer==NULL || window_buffer==NULL) {
+				fprintf(stderr,"Failed to malloc window buffers\n");
+				exit(1);
+			}
+			//fprintf(stderr,"mx %lf, f %lf, b %lf\n",mx, *candidate_barks_p[0], *candidate_barks_p[buffer_frames-1]);
+			for (j=buffer_frames-1; j>peak_window_size; j--) {
+				size_t index = candidate_barks_p[j]-candidate_barks;	
+				assert(*candidate_barks_p[j]==candidate_barks[index] || candidate_barks[index]<0);
+				if (index>=peak_window_size) {
+					//check this bark bounds
+					if (candidate_barks[index-peak_window_size]<-1 || candidate_barks[index]<-1 || candidate_barks[index]<0.5) {
+						continue;
+					}
+					fprintf(stderr,"PROCESSING CANDIDATE BARK %lf\n",candidate_barks[index]);
+					//process this "bark"
+					int k;
+					for (k=0; k<WINDOWS; k++ ){
+						//copy and apply hamming
+						memcpy(window_buffer, buffer_in[i+half*NUM_BUFFERS/2]+(index-peak_window_size)+k*window_shift, sizeof(double)*window_size);
+						int h;
+						//apply hanning before FFT
+						for (h=0; h<window_size; h++) {
+							window_buffer[h]*=hanning_window[h];
+							//fprintf(stderr,"%e\n",hanning_window[h]);
+						}
+						//exit(1);
+						/*for (h=0; h<window_size; h++) {
+							window_buffer[h]=h*k;
+						}*/
+						//FFT
+						//fftw_execute_r2r(p,buffer_in[i+half*NUM_BUFFERS/2]+j*window_shift,cpu_buffer_out[cpu_buffer_index]);
+						fftw_execute_r2r(p,window_buffer,windows_buffer+window_size*k);
+						//CPU and GPU differ on this value...
+						windows_buffer[window_size*k+window_size/2]=0; //[cpu_buffer_index][window_size/2]=0; //fix sync issue between CPU and GPU
+						//fold back and log
+						for (h=0; h<window_size/2; h++) {
+							windows_buffer[window_size*k+h]=abs( windows_buffer[window_size*k+h]) +abs(windows_buffer[window_size*(k+1)-1-h]);
+							//windows_buffer[window_size*k+h]+=windows_buffer[window_size*(k+1)-1-h];
+							windows_buffer[window_size*k+h]=log(abs(windows_buffer[window_size*k+h])+1);
+							windows_buffer[window_size*(k+1)-1-h]=0;
+						}
+						for (h=120; h<window_size/2; h++) {
+							windows_buffer[window_size*k+h]=0;
+						}
+						/*for (h=0; h<window_size; h++) {
+							fprintf(stderr,"%f %f\n",window_buffer[h],windows_buffer[window_size*k+h]);
+						}
+						fprintf(stderr,"%lf\n",log(10));
+						exit(1);*/
+					
+					}
+					//fill this bark
+					for (k=0; k<peak_window_size; k++) {
+						candidate_barks[index-1-k]=-2;
+					}
+
+					//analyze this bark
+					double filter_vs[4]={0,0,0,0};
+	
+					//VERY SPECIFIC AND HARD CODED :(
+					//fprintf(stderr,"WINDOWS %d\n",WINDOWS);
+					assert(WINDOWS==16);
+					/*for (k=0; k<WINDOWS; k++) {
+						int h;	
+						for (h=0; h<128; h++) {
+							//fprintf(stderr,"%0.2f,",windows_buffer[window_size*k+h]);
+							//fprintf(stderr,"%0.4f,",filters[128*k+h]);
+						}
+						fprintf(stderr,"\n");
+					}*/
+
+					//float * one = read_floats("one");
+					for (k=0; k<WINDOWS; k++) {
+						int f;
+						double s=0.0;
+						for (f=0; f<4; f++) {
+							int h;
+							for (h=0; h<window_size/2; h++) {
+								filter_vs[f]+=windows_buffer[window_size*k+h]*filters[f*16*128+128*k+h];
+								//filter_vs[f]+=one[window_size*k+h]*filters[f*16*128+128*k+h];
+								//filter_vs[f]+=one[k*window_size/2+h]*filters[f*16*128+128*k+h];
+								//fprintf(stderr,"%0.4f,",windows_buffer[window_size*k+h]*filters[f*16*128+128*k+h]);
+								//fprintf(stderr,"%0.4f,",one[window_size*k + h]);
+								//fprintf(stderr,"%0.4f,",one[k*window_size/2+h]);
+								//s+=one[k+WINDOWS*h]*filters[f*16*128+128*k+h];
+							}
+							//fprintf(stderr,"\n");
+						}
+						//fprintf(stderr," | %e\n",s);
+					}
+					//fprintf(stderr,"\n");
+					fprintf(stderr,"\n\n%e %e %e %e\n",filter_vs[0],filter_vs[1],filter_vs[2],filter_vs[3]);
+					int f;
+					for (f=0; f<4; f++) {
+						filter_vs[f]+=biases[f];
+						if (filter_vs[f]<0) {
+							filter_vs[f]=0.0;
+						}
+					}
+					const double pr = 1-logit(filter_vs);
+					fprintf(stderr,"PR %e\n",pr);
+					//exit(1);
+					//exit(1);
+				}
+			}
+			free(window_buffer);
+			free(windows_buffer);
+			free(candidate_barks);	
+			free(candidate_barks_p);	
+		}
+		/*
 	    	//fprintf(stdout,"process_audio running cpu fft\n");
 		t[2]=microseconds();
 		double * tmp = (double*)malloc(sizeof(double)*window_size);
@@ -659,7 +885,7 @@ void * process_audio(void * n) {
 		}	
 		free(tmp);
 		free(tmp_usable);
-		t[3]=microseconds();
+		t[3]=microseconds();*/
 		//fprintf(stdout, "CPU %u\n",t[3]-t[2]);
 #endif
 		//uncomment to run CPU also
@@ -762,14 +988,6 @@ void signal_callback_handler(int signum) {
    exit(signum);
 }
 
-
-
-int cmp(const void *x, const void *y) {
-  double xx = *(double*)x, yy = *(double*)y;
-  if (xx < yy) return -1;
-  if (xx > yy) return  1;
-  return 0;
-}
 
 void update_mean(int bank, double scale) {
 
@@ -918,6 +1136,8 @@ int main (int argc, char *argv[]) {
  
   char * model_fn=argv[1];
 
+	filters=read_floats("filters");
+	biases=read_floats("biases");
   read_device_id();
 
 #ifdef GPU

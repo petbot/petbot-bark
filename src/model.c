@@ -72,9 +72,10 @@ double logit(double * v) {
 		}
 		c+=cc;
 	}*/
-
+	//fprintf(stderr,"model size is %d , %f\n",model_size,c);
 	for (i=0; i<model_size; i++) {
 		c+= w[i]*v[i];
+		//fprintf(stderr,"%f %f\n",w[i],v[i]);
 	}
 
 	/*for (i=0; i<model_size/2; i++) {
