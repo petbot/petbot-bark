@@ -73,6 +73,8 @@ void short_to_double(double * real , signed short* shrt, int size) {
 	}
 }
 
+int num_filters;
+
 int buffer_frames = 2048*32;
 //int buffer_frames = 2048*16;
 
@@ -121,15 +123,34 @@ hanning (int i, int nn) {
   //return ( 0.5 * (1.0 - cos (2.0*M_PI*(double)i/(double)(nn-1))) );
 }
 
-double stddev(double * d, int n) {
+void normalize(double * d, int n, double m ) {
     double mean=0.0, sum_deviation=0.0;
     int i;
-    for(i=0; i<n;++i) {
+    for(i=0; i<n; i++) {
         mean+=d[i];
     }
     mean=mean/n;
-    for(i=0; i<n;++i)
-    sum_deviation+=(d[i]-mean)*(d[i]-mean);
+    for(i=0; i<n; i++) {
+    	sum_deviation+=(d[i]-mean)*(d[i]-mean);
+    }
+    double stddev=sqrt(sum_deviation/n);          
+    for (i=0; i<n; i++) {
+	d[i]-=mean;
+	d[i]/=stddev;
+	d[i]*=m;
+    }
+}
+
+double stddev(double * d, int n) {
+    double mean=0.0, sum_deviation=0.0;
+    int i;
+    for(i=0; i<n; i++) {
+        mean+=d[i];
+    }
+    mean=mean/n;
+    for(i=0; i<n; i++) {
+    	sum_deviation+=(d[i]-mean)*(d[i]-mean);
+    }
     return sqrt(sum_deviation/n);           
 }
 
@@ -748,6 +769,9 @@ void * process_audio(void * n) {
 						continue;
 					}
 					fprintf(stderr,"PROCESSING CANDIDATE BARK %lf\n",candidate_barks[index]);
+					//normalize per mean
+					normalize(buffer_in[i+half*NUM_BUFFERS/2]+(index-peak_window_size),window_size+(WINDOWS-1)*window_shift,1000);
+	
 					//process this "bark"i
 					/*char bf[128];
 					sprintf(bf,"out%d\n",yy++);
@@ -788,6 +812,9 @@ void * process_audio(void * n) {
 							windows_buffer[window_size*k+h]=log(abs(windows_buffer[window_size*k+h])+1);
 							windows_buffer[window_size*(k+1)-1-h]=0;
 						}
+						for (h=0; h<14; h++) {
+							windows_buffer[window_size*k+h]=0;
+						}
 						for (h=120; h<window_size/2; h++) {
 							windows_buffer[window_size*k+h]=0;
 						}
@@ -804,7 +831,11 @@ void * process_audio(void * n) {
 					}
 
 					//analyze this bark
-					double filter_vs[4]={0,0,0,0};
+					double filter_vs[num_filters];
+					for (k=0; k<num_filters; k++) {
+						filter_vs[k]=0;
+					}
+
 	
 					//VERY SPECIFIC AND HARD CODED :(
 					//fprintf(stderr,"WINDOWS %d\n",WINDOWS);
@@ -822,7 +853,7 @@ void * process_audio(void * n) {
 					for (k=0; k<WINDOWS; k++) {
 						int f;
 						double s=0.0;
-						for (f=0; f<4; f++) {
+						for (f=0; f<num_filters; f++) {
 							int h;
 							for (h=0; h<window_size/2; h++) {
 								filter_vs[f]+=windows_buffer[window_size*k+h]*filters[f*16*128+128*k+h];
@@ -837,14 +868,15 @@ void * process_audio(void * n) {
 						}
 						//fprintf(stderr," | %e\n",s);
 					}
-					//fprintf(stderr,"\n");
-					fprintf(stderr,"\n\n%e %e %e %e\n",filter_vs[0],filter_vs[1],filter_vs[2],filter_vs[3]);
+					fprintf(stderr,"SCORE: ");
+					//fprintf(stderr,"\n\n%e %e %e %e\n",filter_vs[0],filter_vs[1],filter_vs[2],filter_vs[3]);
 					int f;
-					for (f=0; f<4; f++) {
+					for (f=0; f<num_filters; f++) {
 						filter_vs[f]+=biases[f];
 						if (filter_vs[f]<0) {
 							filter_vs[f]=0.0;
 						}
+						fprintf(stderr,"%0.4f%c",filter_vs[f], f==num_filters-1 ? '\n' : ',');
 					}
 					const double pr = 1-logit(filter_vs);
 					fprintf(stderr,"PR %e\n",pr);
@@ -1154,11 +1186,12 @@ int main (int argc, char *argv[]) {
   
   //fprintf(stdout,"reading model\n");
 
-  if (argc!=2) {
-      fprintf(stdout,"%s model_file\n",argv[0]);
+  if (argc!=3) {
+      fprintf(stdout,"%s model_file filters\n",argv[0]);
       exit(1);
   }
 
+  num_filters = atoi(argv[2]);
  
   char * model_fn=argv[1];
 
