@@ -240,6 +240,7 @@ void init_barks() {
 
 
 void add_bark_sum(double s) {
+	//fprintf(stderr,"ADDING BARK %d %lf\n",stored_barks,s);
 	if (stored_barks==BARK_BANK_SIZE) {
 		//switch banks!
 		//try to grab the mutex? -- assume already sent!
@@ -252,8 +253,8 @@ void add_bark_sum(double s) {
 		sem_post(&s_upload);
 	}
 	bark_bank[BARK_BANK_SIZE*saving_bark_bank+(stored_barks++)]=s;
+		//fprintf(stderr,"STORED %d bark sin bank %d\n",stored_barks,saving_bark_bank);
 	/*if (stored_barks%10==0) {
-		fprintf(stderr,"STORED %d bark sin bank %d\n",stored_barks,saving_bark_bank);
 	}*/
 }
 
@@ -440,42 +441,42 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "audio interface opened\n");
+  //fprintf(stdout, "audio interface opened\n");
 		   
   if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
     fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params allocated\n");
+  //fprintf(stdout, "hw_params allocated\n");
 				 
   if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) {
     fprintf (stderr, "cannot initialize hardware parameter structure (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params initialized\n");
+  //fprintf(stdout, "hw_params initialized\n");
 	
   if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
     fprintf (stderr, "cannot set access type (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params access setted\n");
+  //fprintf(stdout, "hw_params access setted\n");
 	
   if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) {
     fprintf (stderr, "cannot set sample format (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params format setted\n");
+  //fprintf(stdout, "hw_params format setted\n");
 	
   if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) {
     fprintf (stderr, "cannot set sample rate (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params rate setted\n");
+  //fprintf(stdout, "hw_params rate setted\n");
  
   //if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
   if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 1)) < 0) {
@@ -483,24 +484,24 @@ void init_audio() {
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params channels setted\n");
+  //fprintf(stdout, "hw_params channels setted\n");
 	
   if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) {
     fprintf (stderr, "cannot set parameters (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "hw_params setted\n");
+  //fprintf(stdout, "hw_params setted\n");
 	
   snd_pcm_hw_params_free (hw_params);
-  fprintf(stdout, "hw_params freed\n");
+  //fprintf(stdout, "hw_params freed\n");
 	
   if ((err = snd_pcm_prepare (capture_handle)) < 0) {
     fprintf (stderr, "cannot prepare audio interface for use (%s)\n",
              snd_strerror (err));
     exit (1);
   }
-  fprintf(stdout, "audio interface prepared\n");
+  //fprintf(stdout, "audio interface prepared\n");
 }
 
 
@@ -676,14 +677,14 @@ void * process_audio(void * n) {
 			for (j=0; j<buffer_frames; j++) {
 				buffer_in[i+half*NUM_BUFFERS/2][j]=1000*(buffer_in[i+half*NUM_BUFFERS/2][j]-mean)/std;
 			}
-			fprintf(stderr,"%lf %lf\n",mean,std);
+			//fprintf(stderr,"%lf %lf\n",mean,std);
 			std = stddev(buffer_in[i+half*NUM_BUFFERS/2],buffer_frames);
 			s=0;
 			for (j=0; j<buffer_frames; j++) {
 				s+=buffer_in[i+half*NUM_BUFFERS/2][j];
 			}
 			mean = s/buffer_frames;
-			fprintf(stderr,"%lf %lf\n",mean,std);
+			//fprintf(stderr,"%lf %lf\n",mean,std);
 
 	
 		}
@@ -768,7 +769,7 @@ void * process_audio(void * n) {
 					if (candidate_barks[index-peak_window_size]<-1 || candidate_barks[index]<-1 || candidate_barks[index]<0.5) {
 						continue;
 					}
-					fprintf(stderr,"PROCESSING CANDIDATE BARK %lf\n",candidate_barks[index]);
+					//fprintf(stderr,"PROCESSING CANDIDATE BARK %lf\n",candidate_barks[index]);
 					//normalize per mean
 					normalize(buffer_in[i+half*NUM_BUFFERS/2]+(index-peak_window_size),window_size+(WINDOWS-1)*window_shift,1000);
 	
@@ -868,7 +869,7 @@ void * process_audio(void * n) {
 						}
 						//fprintf(stderr," | %e\n",s);
 					}
-					fprintf(stderr,"SCORE: ");
+					//fprintf(stderr,"SCORE: ");
 					//fprintf(stderr,"\n\n%e %e %e %e\n",filter_vs[0],filter_vs[1],filter_vs[2],filter_vs[3]);
 					int f;
 					for (f=0; f<num_filters; f++) {
@@ -876,10 +877,14 @@ void * process_audio(void * n) {
 						if (filter_vs[f]<0) {
 							filter_vs[f]=0.0;
 						}
-						fprintf(stderr,"%0.4f%c",filter_vs[f], f==num_filters-1 ? '\n' : ',');
+						//fprintf(stderr,"%0.4f%c",filter_vs[f], f==num_filters-1 ? '\n' : ',');
 					}
 					const double pr = 1-logit(filter_vs);
-					fprintf(stderr,"PR %e\n",pr);
+					/*if (pr>0.1) {
+						//send it to server
+					}*/
+					//fprintf(stderr,"PR %e %d\n",pr,stored_barks);
+					add_bark_sum(pr);
 					//exit(1);
 					//exit(1);
 				}
@@ -1089,31 +1094,37 @@ char * to_json() {
 	//lets subtract out the mean
 	double s=0.0;
 	int i;
+		//fprintf(stderr,"in placewhat\n");
 	for (i=0; i<BARK_BANK_SIZE; i++) {
 		//double v = MAX(mean-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i],0);
 		//double v = mean-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
-		double v = median-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
+		//double v = median-bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
+		double v = bark_bank[BARK_BANK_SIZE*sending_bark_bank+i];
+		//fprintf(stderr,"in place %d found %lf %lf \n",i,v,s);
 		s+=v;
 	}
-	s=abs(s);
+	//s=abs(s);
+	//fprintf(stderr,"s is %lf %d\n",s,sending_bark_bank);
 	int x=0;
-	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.1f }" , time_barks[sending_bark_bank], time(NULL),s);
+	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.3f }" , time_barks[sending_bark_bank], time(NULL),s);
 	//fprintf(stderr,"JSON : %s, %e, %e\n",json_buffer,s,median);
 	return json_buffer;
 }	
 
 void * upload_barks(void * n ) {
 	while (exit_now!=1) { 
+		//fprintf(stderr,"RUNNING!\n");
 		sem_wait(&s_upload); //wait for data to become available
 		if (exit_now==1) {
 			sem_post(&s_exit);
 			return NULL;
 		}
+		//fprintf(stderr,"RUNNING2!\n");
 	  
-		if (uploads<2) {
-	  		update_mean(sending_bark_bank,0); //set the mean
+		if (0>1 && uploads<2) {
+	  		//update_mean(sending_bark_bank,0); //set the mean
 		} else {
-	  		update_mean(sending_bark_bank,0.9); //set the mean
+	  		//update_mean(sending_bark_bank,0.9); //set the mean
 
 			to_json();
 			CURL *curl;
@@ -1212,18 +1223,18 @@ int main (int argc, char *argv[]) {
   }
   fprintf(stderr,"MAKE DEV DONE\n");
 #endif 
-fprintf(stderr,"READMODEL\n");
+//fprintf(stderr,"READMODEL\n");
   read_model(model_fn);
-fprintf(stderr,"READMODEL\n");
+//fprintf(stderr,"READMODEL\n");
   //fprintf(stdout,"starting inits\n");
   curl_global_init(CURL_GLOBAL_ALL);
-fprintf(stderr,"READMODELz \n");
+//fprintf(stderr,"READMODELz \n");
   init_barks();
-fprintf(stderr,"READMODEL y \n");
+//fprintf(stderr,"READMODEL y \n");
   init_audio();
-fprintf(stderr,"READMODEL x\n");
+//fprintf(stderr,"READMODEL x\n");
   init_buffers();
-fprintf(stderr,"READMODEL 2\n");
+//fprintf(stderr,"READMODEL 2\n");
 #ifdef GPU
   init_gpu();
 #endif
