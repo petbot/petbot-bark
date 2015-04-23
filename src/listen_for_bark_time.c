@@ -173,6 +173,7 @@ int cmp_p(const void *x, const void *y) {
 
 
 float * read_floats(char * fn ) {
+	
 	FILE * fptr = fopen(fn,"rb");
 	if (fptr==NULL) {
 		fprintf(stderr,"Failed to open file %s\n",fn);
@@ -1197,17 +1198,19 @@ int main (int argc, char *argv[]) {
   
   //fprintf(stdout,"reading model\n");
 
-  if (argc!=3) {
-      fprintf(stdout,"%s model_file filters\n",argv[0]);
+  if (argc!=5) {
+      fprintf(stdout,"%s model_file num_filters filters biases\n",argv[0]);
       exit(1);
   }
 
   num_filters = atoi(argv[2]);
+  char * filters_fn=argv[3];
+  char * biases_fn=argv[4];
  
   char * model_fn=argv[1];
 
-	filters=read_floats("filters");
-	biases=read_floats("biases");
+	filters=read_floats(filters_fn);
+	biases=read_floats(biases_fn);
   read_device_id();
 
 #ifdef GPU
