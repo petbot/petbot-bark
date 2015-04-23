@@ -890,6 +890,7 @@ void * process_audio(void * n) {
 					//exit(1);
 				}
 			}
+			add_bark_sum(0.0);
 			free(window_buffer);
 			free(windows_buffer);
 			free(candidate_barks);	
@@ -1108,7 +1109,7 @@ char * to_json() {
 	//fprintf(stderr,"s is %lf %d\n",s,sending_bark_bank);
 	int x=0;
 	x+=sprintf(json_buffer+x, "{ \"time-start\": %u, \"time-end\": %u , \"data\": %0.3f }" , time_barks[sending_bark_bank], time(NULL),s);
-	//fprintf(stderr,"JSON : %s, %e, %e\n",json_buffer,s,median);
+	fprintf(stderr,"JSON : %s, %e, %e\n",json_buffer,s,median);
 	return json_buffer;
 }	
 
@@ -1235,15 +1236,18 @@ int main (int argc, char *argv[]) {
   init_barks();
 //fprintf(stderr,"READMODEL y \n");
   init_audio();
-//fprintf(stderr,"READMODEL x\n");
+  fprintf(stderr,"audio - online\n");
   init_buffers();
-//fprintf(stderr,"READMODEL 2\n");
+  fprintf(stderr,"buffers - allocated\n");
 #ifdef GPU
   init_gpu();
 #endif
 #ifdef CPU
   init_fftw3();
+  fprintf(stderr,"fftw3 - init'd\n");
 #endif
+
+ 
 
   //set up the semaphores
   sem_init(&s_ready, 0, 0); 
@@ -1287,6 +1291,7 @@ int main (int argc, char *argv[]) {
     exit(1);
   }
 
+  fprintf(stderr,"Running...\n");
 
   char line[2056];
   while (fgets(line, 2056, stdin)) {
